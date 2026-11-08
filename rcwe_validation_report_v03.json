@@ -1,0 +1,150 @@
+{
+  "version": "0.3.0",
+  "environment": {
+    "python": "3.14.5",
+    "platform": "macOS-27.2-arm64-arm-64bit-Mach-O",
+    "torch": "2.15.0",
+    "accelerator": "Apple Silicon Metal Performance Shaders (mps)",
+    "device_type": "mps",
+    "rcwe_params": 80611,
+    "baseline_tf_params": 71648,
+    "wall_time_sec": 12.283
+  },
+  "hardware_scaling": [
+    {
+      "seq_len": 256.0,
+      "tf_mflops": 25.165824,
+      "rcwe_mflops": 51.11808,
+      "tf_kb": 2560.0,
+      "rcwe_kb": 32.0,
+      "measured_psi_kb": 16.0,
+      "hw_device_alloc_kb": 2676.0,
+      "tf_latency_ms": 2.1316250010083118,
+      "rcwe_latency_ms": 4.9883056587229175,
+      "tf_peak_alloc_kb": 768.0,
+      "rcwe_peak_alloc_kb": 16.0,
+      "compression_ratio": 80.0
+    },
+    {
+      "seq_len": 1024.0,
+      "tf_mflops": 301.989888,
+      "rcwe_mflops": 205.78304,
+      "tf_kb": 34816.0,
+      "rcwe_kb": 32.0,
+      "measured_psi_kb": 16.0,
+      "hw_device_alloc_kb": 10038.0,
+      "tf_latency_ms": 5.150333318548898,
+      "rcwe_latency_ms": 5.8794999883199734,
+      "tf_peak_alloc_kb": 6144.0,
+      "rcwe_peak_alloc_kb": 16.0,
+      "compression_ratio": 1088.0
+    },
+    {
+      "seq_len": 2048.0,
+      "tf_mflops": 1140.850688,
+      "rcwe_mflops": 412.8768,
+      "tf_kb": 135168.0,
+      "rcwe_kb": 32.0,
+      "measured_psi_kb": 16.0,
+      "hw_device_alloc_kb": 27406.0,
+      "tf_latency_ms": 15.156458364799619,
+      "rcwe_latency_ms": 7.43491668254137,
+      "tf_peak_alloc_kb": 20480.0,
+      "rcwe_peak_alloc_kb": 16.0,
+      "compression_ratio": 4224.0
+    },
+    {
+      "seq_len": 4096.0,
+      "tf_mflops": 4429.185024,
+      "rcwe_mflops": 828.37504,
+      "tf_kb": 532480.0,
+      "rcwe_kb": 32.0,
+      "measured_psi_kb": 16.0,
+      "hw_device_alloc_kb": 85566.0,
+      "tf_latency_ms": 59.09156935134282,
+      "rcwe_latency_ms": 11.764986324124038,
+      "tf_peak_alloc_kb": 73728.0,
+      "rcwe_peak_alloc_kb": 16.0,
+      "compression_ratio": 16640.0
+    }
+  ],
+  "training_calibration": {
+    "rcwe_train_loss": 1.021855115890503,
+    "tf_train_loss": 10.743264516194662
+  },
+  "head_to_head_mutation_benchmark": {
+    "rcwe_post_mutation_mse": 0.000708966531480352,
+    "tf_post_mutation_mse": 0.11366716722647348,
+    "rcwe_hamiltonian_drift": 0.11865031917889912,
+    "tf_hamiltonian_drift": 1.0602816154559453
+  },
+  "multiseed_statistics": {
+    "seeds": [
+      42,
+      101,
+      202
+    ],
+    "rcwe_post_mutation_mse": {
+      "mean": 0.000708966531480352,
+      "std": 0.00011834288327507031,
+      "ci95_halfwidth": 0.00013391757921045507,
+      "ci95_low": 0.0005750489522698969,
+      "ci95_high": 0.0008428841106908071
+    },
+    "tf_post_mutation_mse": {
+      "mean": 0.11366716722647348,
+      "std": 0.017731296693475177,
+      "ci95_halfwidth": 0.02006485108135567,
+      "ci95_low": 0.09360231614511781,
+      "ci95_high": 0.13373201830782916
+    },
+    "rcwe_hamiltonian_drift": {
+      "mean": 0.11865031917889912,
+      "std": 0.012214376520480066,
+      "ci95_halfwidth": 0.013821868201281918,
+      "ci95_low": 0.1048284509776172,
+      "ci95_high": 0.13247218738018104
+    },
+    "tf_hamiltonian_drift": {
+      "mean": 1.0602816154559453,
+      "std": 0.051433691140664366,
+      "ci95_halfwidth": 0.058202700633938134,
+      "ci95_low": 1.0020789148220073,
+      "ci95_high": 1.1184843160898834
+    },
+    "regime_id_accuracy": {
+      "mean": 0.9777777777777779,
+      "std": 0.03849001794597504,
+      "ci95_halfwidth": 0.04355555555555555,
+      "ci95_low": 0.9342222222222223,
+      "ci95_high": 1.0213333333333334
+    },
+    "w1_posterior_confidence": {
+      "mean": 0.9399666666666667,
+      "std": 0.04515986418639155,
+      "ci95_halfwidth": 0.051103197099376996,
+      "ci95_low": 0.8888634695672897,
+      "ci95_high": 0.9910698637660438
+    }
+  },
+  "causal_identification": {
+    "accuracy": 0.9777777777777779,
+    "regime_1_posteriors": [
+      0.0236,
+      0.9149,
+      0.0615
+    ],
+    "regime_1_residuals": [
+      1.09996,
+      0.64295,
+      0.98039
+    ],
+    "dominant_regime_id": 1,
+    "mdo_action_idx": 4,
+    "mdo_target_nodes": [
+      5,
+      6
+    ],
+    "mdo_divergence_score": 0.03946489840745926
+  }
+}

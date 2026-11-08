@@ -1,0 +1,29 @@
+Metadata-Version: 2.4
+Name: rcwe
+Version: 0.3.0
+Summary: Resonant Causal World Engine v0.3.0: Multi-Seed Statistical CIs & Apple Silicon MPS Acceleration
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: torch>=2.1.0
+Requires-Dist: numpy>=1.26.0
+Provides-Extra: gpu
+Requires-Dist: triton>=2.1.0; extra == "gpu"
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4.0; extra == "dev"
+
+# Resonant Causal World Engine (RCWE) — v0.3.0 Multi-Seed & MPS GPU Edition
+
+RCWE v0.3.0 combines:
+1. **Apple Silicon MPS / CUDA / CPU Hardware Accelerator (`rcwe/kernels/accelerator.py`)**
+2. **Complex Phase-Space Wavepackets (`rcwe/core/wave_codec.py`)**
+3. **O(N log N) Spectral Mixing & O(1) Standing Wavefields (`rcwe/core/resonance.py`)**
+4. **Symplectic Causal Manifolds with Leapfrog Verlet Integration (`rcwe/core/symplectic.py`)**
+5. **Backprop-Free 3-Factor Metabolic Plasticity & Sleep Consolidation (`rcwe/core/metabolic.py`)**
+6. **Multi-Seed Statistical Validation & 95% Confidence Intervals (`rcwe/diagnostics/validation.py`)**
+
+## Quickstart
+```bash
+python -m pip install -e '.[dev]'
+python -m pytest -v
+rcwe-bench
+```
