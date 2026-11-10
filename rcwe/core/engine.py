@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict, Tuple, Optional
+from pathlib import Path
+from typing import Dict, Tuple, Optional, Union
 
 from rcwe.core.wave_codec import WavepacketCodec
 from rcwe.core.resonance import HolographicResonanceLayer
@@ -23,6 +24,7 @@ class ResonantCausalWorldEngine(nn.Module):
         self.d_model = d_model
         self.d_action = d_action
         self.num_worldlines = num_worldlines
+        self.num_freq_bands = num_freq_bands
 
         self.codec = WavepacketCodec(d_input, d_model)
         self.resonance = HolographicResonanceLayer(d_model, num_freq_bands=num_freq_bands)
@@ -39,6 +41,63 @@ class ResonantCausalWorldEngine(nn.Module):
         self.fast_sensory_bias.zero_()
         self.metabolic_synapse.fast_weight.zero_()
         self.metabolic_synapse.atp_budget.fill_(1.0)
+
+    def save_pretrained(
+        self,
+        checkpoint_path: Union[str, Path],
+        standing_field: Optional[torch.Tensor] = None,
+    ) -> str:
+        """
+        v0.6.0 Full State Serialization.
+        Persists slow weights, fast synaptic plastic weights, ATP metabolic budget,
+        fast sensory bias, and the live O(1) complex standing wavefield |Psi|.
+        """
+        path = Path(checkpoint_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "config": {
+                "d_input": self.d_input,
+                "d_model": self.d_model,
+                "d_action": self.d_action,
+                "num_worldlines": self.num_worldlines,
+                "num_freq_bands": self.num_freq_bands,
+            },
+            "state_dict": {k: v.detach().cpu() for k, v in self.state_dict().items()},
+            "standing_field_real": standing_field.real.detach().cpu() if standing_field is not None else None,
+            "standing_field_imag": standing_field.imag.detach().cpu() if standing_field is not None else None,
+        }
+        torch.save(payload, path)
+        return str(path.resolve())
+
+    @classmethod
+    def load_pretrained(
+        cls,
+        checkpoint_path: Union[str, Path],
+        device: Union[str, torch.device] = "cpu",
+    ) -> Tuple["ResonantCausalWorldEngine", Optional[torch.Tensor]]:
+        """
+        v0.6.0 Full State Deserialization.
+        Restores model architecture, slow/fast weights, ATP budget, and O(1) standing wavefield.
+        """
+        dev = torch.device(device)
+        payload = torch.load(Path(checkpoint_path), map_location="cpu", weights_only=False)
+        cfg = payload["config"]
+        model = cls(
+            d_input=cfg["d_input"],
+            d_model=cfg["d_model"],
+            d_action=cfg["d_action"],
+            num_worldlines=cfg["num_worldlines"],
+            num_freq_bands=cfg["num_freq_bands"],
+        )
+        model.load_state_dict(payload["state_dict"])
+        model.to(dev)
+
+        sf = None
+        if payload.get("standing_field_real") is not None and payload.get("standing_field_imag") is not None:
+            sf_r = payload["standing_field_real"].to(dev)
+            sf_i = payload["standing_field_imag"].to(dev)
+            sf = torch.complex(sf_r, sf_i)
+        return model, sf
 
     def forward(
         self,
@@ -80,8 +139,6 @@ class ResonantCausalWorldEngine(nn.Module):
         consensus_i = torch.einsum("kb,kbld->bld", branch_weights, stacked_i)
         z_consensus = torch.complex(consensus_r, consensus_i)
 
-        # If y_target is not provided during plastic_runtime, use internal top-down predictor;
-        # if y_target is provided, modulate synapse using grounded sensory prediction error
         z_plastic = self.metabolic_synapse(z_consensus, plastic_runtime=(plastic_runtime and y_target is None))
         y_pred = x_seq + self.codec.decode(z_plastic) + self.fast_sensory_bias
 
@@ -111,8 +168,16 @@ class ResonantCausalWorldEngine(nn.Module):
         self, z_current: torch.Tensor, candidate_actions: torch.Tensor
     ) -> Tuple[int, torch.Tensor]:
         num_candidates = candidate_actions.shape[0]
-        divergence_scores = []
+        zero_act = torch.zeros(
+            z_current.shape[0], z_current.shape[1], candidate_actions.shape[-1], device=z_current.device
+        )
+        base_outputs = []
+        for k, branch in enumerate(self.worldlines):
+            z0, _ = branch(z_current, zero_act)
+            base_outputs.append(self.branch_decoders[k](torch.cat([z0.real, z0.imag], dim=-1)))
+        base_stack = torch.stack(base_outputs, dim=0)
 
+        divergence_scores = []
         for c in range(num_candidates):
             act = candidate_actions[c].expand(z_current.shape[0], z_current.shape[1], -1)
             branch_outputs = []
@@ -120,8 +185,8 @@ class ResonantCausalWorldEngine(nn.Module):
                 z_next, _ = branch(z_current, act)
                 pred_k = self.branch_decoders[k](torch.cat([z_next.real, z_next.imag], dim=-1))
                 branch_outputs.append(pred_k)
-            stacked_out = torch.stack(branch_outputs, dim=0)
-            divergence_scores.append(stacked_out.var(dim=0).mean())
+            delta_out = (torch.stack(branch_outputs, dim=0) - base_stack) / 0.005
+            divergence_scores.append(delta_out.var(dim=0).mean())
 
         scores_tensor = torch.stack(divergence_scores)
         best_idx = int(torch.argmax(scores_tensor).item())

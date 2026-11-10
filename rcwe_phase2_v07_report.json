@@ -1,0 +1,48 @@
+{
+  "version": "0.7.0",
+  "repository": "https://github.com/stevegolter-Doradus-Labs/Doradus-RCWE",
+  "track_a_metal_msl_131k": {
+    "accelerator": "Apple Silicon Metal Performance Shaders (mps)",
+    "msl_shader_compiled": true,
+    "sweeps": [
+      {
+        "seq_len": 4096,
+        "rcwe_msl_latency_ms": 3.39,
+        "measured_psi_kb": 8.0,
+        "tf_equivalent_attn_gb": 0.25
+      },
+      {
+        "seq_len": 32768,
+        "rcwe_msl_latency_ms": 8.07,
+        "measured_psi_kb": 8.0,
+        "tf_equivalent_attn_gb": 16.0
+      },
+      {
+        "seq_len": 65536,
+        "rcwe_msl_latency_ms": 15.29,
+        "measured_psi_kb": 8.0,
+        "tf_equivalent_attn_gb": 64.0
+      },
+      {
+        "seq_len": 131072,
+        "rcwe_msl_latency_ms": 32.22,
+        "measured_psi_kb": 8.0,
+        "tf_equivalent_attn_gb": 256.0
+      }
+    ]
+  },
+  "track_b_self_healing_control": {
+    "identified_regime": 1,
+    "mdo_probe_action_idx": 4,
+    "unhealed_sinkhole_energy_loss": 0.39753198996186256,
+    "self_healed_residual_deviation": 0.03691716748289764,
+    "stabilization_gain_ratio": 10.76821481891926
+  },
+  "track_c_rcwe_deep_lm": {
+    "layers": 4,
+    "sequence_tokens": 623,
+    "rcwe_deep_token_accuracy": 1.0,
+    "tf_deep_token_accuracy": 0.5778,
+    "rcwe_deep_total_psi_kb": 64.0
+  }
+}

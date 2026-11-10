@@ -6,7 +6,7 @@ from rcwe.diagnostics.profiler import HardwareProfilingHarness
 from rcwe.diagnostics.validation import ScientificValidationBenchmark
 from rcwe.kernels.accelerator import select_best_device, sync_device, get_device_memory_kb
 
-__version__ = "0.3.0"
+__version__ = "0.7.0"
 
 __all__ = [
     "ResonantCausalWorldEngine",

@@ -1,0 +1,70 @@
+{
+  "extreme_context_sweep": [
+    {
+      "seq_len": 256,
+      "tf_status": "OK",
+      "tf_latency_ms": 3.001042059622705,
+      "rcwe_latency_ms": 9.708542027510703,
+      "tf_workspace_kb": 2560.0,
+      "tf_mask_kv_kb": 768.0,
+      "measured_psi_kb": 16.0,
+      "compression_ratio": 80.0
+    },
+    {
+      "seq_len": 1024,
+      "tf_status": "OK",
+      "tf_latency_ms": 29.35783297289163,
+      "rcwe_latency_ms": 7.950500003062189,
+      "tf_workspace_kb": 34816.0,
+      "tf_mask_kv_kb": 6144.0,
+      "measured_psi_kb": 16.0,
+      "compression_ratio": 1088.0
+    },
+    {
+      "seq_len": 4096,
+      "tf_status": "OK",
+      "tf_latency_ms": 68.0786669254303,
+      "rcwe_latency_ms": 22.94066594913602,
+      "tf_workspace_kb": 532480.0,
+      "tf_mask_kv_kb": 73728.0,
+      "measured_psi_kb": 16.0,
+      "compression_ratio": 16640.0
+    },
+    {
+      "seq_len": 8192,
+      "tf_status": "OOM / MEMORY WALL (2064 MB > 1024 MB Limit)",
+      "tf_latency_ms": null,
+      "rcwe_latency_ms": 22.0008339965716,
+      "tf_workspace_kb": 2113536.0,
+      "tf_mask_kv_kb": 278528.0,
+      "measured_psi_kb": 16.0,
+      "compression_ratio": 66048.0
+    },
+    {
+      "seq_len": 16384,
+      "tf_status": "OOM / MEMORY WALL (8224 MB > 1024 MB Limit)",
+      "tf_latency_ms": null,
+      "rcwe_latency_ms": 41.15979094058275,
+      "tf_workspace_kb": 8421376.0,
+      "tf_mask_kv_kb": 1081344.0,
+      "measured_psi_kb": 16.0,
+      "compression_ratio": 263168.0
+    },
+    {
+      "seq_len": 32768,
+      "tf_status": "OOM / MEMORY WALL (32832 MB > 1024 MB Limit)",
+      "tf_latency_ms": null,
+      "rcwe_latency_ms": 108.05158293806016,
+      "tf_workspace_kb": 33619968.0,
+      "tf_mask_kv_kb": 4259840.0,
+      "measured_psi_kb": 16.0,
+      "compression_ratio": 1050624.0
+    }
+  ],
+  "symbolic_benchmark": {
+    "rcwe_symbolic_conservation_error": 0.0466238409280777,
+    "tf_symbolic_conservation_error": 0.29997485876083374,
+    "rcwe_rule_mutation_mse": 0.03450314551591873,
+    "tf_rule_mutation_mse": 0.262394580245018
+  }
+}
