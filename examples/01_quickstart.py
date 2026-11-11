@@ -4,14 +4,13 @@ RCWE in five lines: learn normal behaviour, find anomalies, forecast, save.
     python examples/01_quickstart.py
 
 Uses the built-in pump-station demo data, so it runs anywhere. Results are written to
-./rcwe_output/example_quickstart/.
+./rcwe_output/example_quickstart/ (or under the folder named by RCWE_OUTPUT_DIR).
 """
-from pathlib import Path
-
 from rcwe import TelemetryModel
+from rcwe.paths import output_dir
 from rcwe.toolkit.demo import write_demo_files
 
-out = Path("rcwe_output/example_quickstart")
+out = output_dir() / "example_quickstart"
 paths = write_demo_files(out)                          # pump_station_normal.csv + pump_station_incident.csv
 
 model = TelemetryModel().fit(paths["normal"])          # 1. learn what "normal" looks like

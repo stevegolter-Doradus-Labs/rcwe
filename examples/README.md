@@ -1,7 +1,8 @@
 # Examples
 
 Three short scripts, each runnable as is. Install RCWE first (`python -m pip install -e .` from the
-repository root). Everything they write goes to `./rcwe_output/`.
+repository root). Everything they write goes to `./rcwe_output/`, or to the folder named by the
+`RCWE_OUTPUT_DIR` environment variable.
 
 | Script | Shows | Run time |
 |---|---|---|
@@ -25,7 +26,8 @@ python examples/03_live_stream.py --adapt
 
 `data/sample_grid_telemetry.csv` and `.json` are the small grid-telemetry logs that shipped with
 earlier versions: 40 rows of a 16-node ring, with a fault injected on nodes 5 and 6 halfway
-through. They are deliberately tiny, so RCWE reports that the result is indicative only. For a realistic dataset, run:
+through. They are deliberately tiny, so RCWE reports that the result is indicative only. For a
+realistic dataset, run:
 
 ```bash
 rcwe demo-data

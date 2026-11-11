@@ -36,7 +36,7 @@ test:  ## Full automated test suite
 
 fast:  ## Quick smoke tests (core maths + toolkit data layer)
 	@$(PYTHON) -m compileall -q rcwe tests
-	@$(PYTHON) -m pytest -q tests/test_invariance.py tests/test_plasticity_and_mdo.py tests/test_toolkit_table.py
+	@$(PYTHON) -m pytest -q tests/test_invariance.py tests/test_plasticity_and_mdo.py tests/test_toolkit_table.py tests/test_toolkit_table_awkward.py
 
 # ---- research benchmark suites (reports go to ./rcwe_output) ---------------------------
 bench:  ## Multi-seed validation benchmark

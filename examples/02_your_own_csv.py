@@ -12,6 +12,7 @@ import argparse
 from pathlib import Path
 
 from rcwe import TelemetryModel, load_table
+from rcwe.paths import output_dir
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument("log", help="CSV / TSV / JSON / JSON-lines telemetry file")
@@ -40,7 +41,7 @@ print("\n" + model.summary())
 result = model.detect(table, sensitivity=args.sensitivity)
 print("\n" + result.summary())
 
-out = Path("rcwe_output") / Path(args.log).stem
+out = output_dir() / Path(args.log).stem          # ./rcwe_output/<file name>/, or under RCWE_OUTPUT_DIR
 print("\nreport:", result.to_html(out / "report.html", title=f"RCWE analysis: {Path(args.log).name}"))
 print("events:", result.to_json(out / "result.json", include_series=False))
 print("model: ", model.save(out / "model.rcwe"))
