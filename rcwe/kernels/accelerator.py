@@ -1,8 +1,16 @@
+import os
+
 import torch
 from typing import Optional
 
 
 def select_best_device(prefer_device: Optional[str] = None) -> torch.device:
+    """
+    Pick where to run: an explicit `prefer_device`, else the `RCWE_DEVICE` environment
+    variable (e.g. `RCWE_DEVICE=cpu` to rule out GPU quirks), else CUDA, then Apple MPS, then CPU.
+    """
+    if prefer_device is None:
+        prefer_device = os.environ.get("RCWE_DEVICE") or None
     if prefer_device is not None:
         return torch.device(prefer_device)
     if torch.cuda.is_available():

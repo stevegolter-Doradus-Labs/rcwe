@@ -12,15 +12,25 @@ dist/
 # Pytest & coverage
 .pytest_cache/
 .coverage
+htmlcov/
 
 # Virtual environments
 .venv/
 venv/
 env/
 
-# macOS system files
+# Editors & OS
 .DS_Store
+.idea/
+.vscode/
 
-# Generated runtime artifacts (kept local unless explicitly committed)
+# Everything RCWE generates (reports, dashboards, checkpoints, demo data)
+rcwe_output/
+rcwe_quickstart/
+rcwe_demo/
 benchmarks_data/
 *.pt
+*.rcwe
+
+# Your own data dropped in for analysis
+datasets/

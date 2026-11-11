@@ -1,50 +1,75 @@
-VENV_PYTHON := $(HOME)/Downloads/.venv/bin/python
-PYTEST := $(HOME)/Downloads/.venv/bin/pytest
-BENCH := $(HOME)/Downloads/.venv/bin/rcwe-bench
+# RCWE developer shortcuts. Everything here is a thin wrapper around the `rcwe` command,
+# so the same steps work without make (see `rcwe --help`).
+#
+# The interpreter is the project's virtualenv if there is one, otherwise whatever
+# `python3` is on your PATH. Override with:  make test PYTHON=/path/to/python
 
-.PHONY: fast test bench dashboard extreme clean-temp
+PYTHON ?= $(shell if [ -x .venv/bin/python ]; then echo .venv/bin/python; else command -v python3 || command -v python; fi)
+RCWE := $(PYTHON) -m rcwe
 
-fast:
-	@$(VENV_PYTHON) -m compileall -q rcwe tests
-	@$(PYTEST) -q tests/test_invariance.py tests/test_plasticity_and_mdo.py
+.DEFAULT_GOAL := help
+.PHONY: help install quickstart doctor serve ui test fast bench extreme dashboard realworld phase2 \
+        train-corpus custom-data v09 predict benchmarks clean
 
-test:
-	@$(VENV_PYTHON) -m compileall -q rcwe tests
-	@$(PYTEST) -v
+help:  ## Show this help
+	@echo "RCWE make targets (python: $(PYTHON))"
+	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  %-14s %s\n", $$1, $$2}'
 
-bench:
-	@$(BENCH)
+install:  ## Install RCWE (editable) with test dependencies into the current environment
+	$(PYTHON) -m pip install -e ".[dev]"
 
-clean-temp:
-	@rm -rf $(HOME)/Downloads/rcwe-clean-* $(HOME)/Downloads/rcwe-v02* $(HOME)/Downloads/rcwe-v03-*
-	@echo Cleaned old temporary directories.
+quickstart:  ## 20-second guided tour on built-in demo data
+	@$(RCWE) quickstart
 
-extreme:
-	@$(VENV_PYTHON) -m rcwe.diagnostics.extreme_bench
+doctor:  ## Check that this machine can run RCWE
+	@$(RCWE) doctor
 
-dashboard:
-	@$(VENV_PYTHON) -m rcwe.diagnostics.dashboard_v05
+serve:  ## RCWE Studio in the browser: upload a log, explore the report
+	@$(RCWE) serve
 
-realworld:
-	@$(VENV_PYTHON) -m rcwe.benchmarks.real_world_suite
+ui:  ## Mission Control: live dashboard of the engine on the built-in sandbox
+	@$(RCWE) ui
 
-predict:
-	@$(VENV_PYTHON) -m rcwe.predict_cli --input sample_grid_telemetry.csv
+test:  ## Full automated test suite
+	@$(PYTHON) -m compileall -q rcwe tests
+	@$(PYTHON) -m pytest -q
 
-serve:
-	@$(VENV_PYTHON) -m rcwe.server.live_server
+fast:  ## Quick smoke tests (core maths + toolkit data layer)
+	@$(PYTHON) -m compileall -q rcwe tests
+	@$(PYTHON) -m pytest -q tests/test_invariance.py tests/test_plasticity_and_mdo.py tests/test_toolkit_table.py
 
-phase2:
-	@$(VENV_PYTHON) -m rcwe.diagnostics.phase2_v07
+# ---- research benchmark suites (reports go to ./rcwe_output) ---------------------------
+bench:  ## Multi-seed validation benchmark
+	@$(RCWE) bench validate
 
-train-corpus:
-	@$(VENV_PYTHON) -m rcwe.lm.corpus_trainer
+extreme:  ## Context-length scaling sweep + symbolic conservation task
+	@$(RCWE) bench extreme
 
-custom-data:
-	@$(VENV_PYTHON) -m rcwe.ingestion.custom_connector
+dashboard:  ## CSV/JSON ingestion, code-trace task and the static v0.5 dashboard
+	@$(RCWE) bench dashboard
 
-v09:
-	@$(VENV_PYTHON) -m rcwe.v09_runner
+realworld:  ## ETT / SWaT / NASA-style regime-shift suite
+	@$(RCWE) bench realworld
 
-ui:
-	@$(VENV_PYTHON) -m rcwe.ui.mission_control
+phase2:  ## Metal kernel scaling, self-healing controller, RCWE-Deep language model
+	@$(RCWE) bench phase2
+
+train-corpus:  ## Train RCWE-Deep on the repository's own source code
+	@$(RCWE) bench corpus
+
+custom-data:  ## Scan datasets/custom/ with the legacy predictor
+	@$(RCWE) bench custom
+
+v09:  ## Multimodal fusion, symplectic RL and wavefield swarm tracks
+	@$(RCWE) bench v09
+
+predict:  ## Legacy one-shot predictor on the sample grid log
+	@$(PYTHON) -m rcwe.predict_cli --input examples/data/sample_grid_telemetry.csv
+
+benchmarks:  ## Run every suite and rebuild docs/BENCHMARKS.md from the results
+	@$(PYTHON) scripts/build_benchmarks_doc.py
+
+clean:  ## Remove generated files and caches
+	@rm -rf rcwe_output rcwe_quickstart rcwe_demo benchmarks_data build dist .pytest_cache
+	@find . -name __pycache__ -type d -not -path "./.venv/*" -prune -exec rm -rf {} +
+	@echo "Cleaned generated files."

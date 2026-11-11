@@ -3,7 +3,7 @@ from rcwe.diagnostics.validation import ScientificValidationBenchmark
 
 def main() -> None:
     print("================================================================================")
-    print("   DORADUS LABS — RCWE v0.3.0 MULTI-SEED & MPS ACCELERATOR BENCHMARK SUITE")
+    print("   DORADUS LABS — RCWE MULTI-SEED VALIDATION BENCHMARK SUITE")
     print("================================================================================")
     bench = ScientificValidationBenchmark(seed=42)
     report = bench.run_multiseed_validation(seeds=[42, 101, 202], epochs=55)
