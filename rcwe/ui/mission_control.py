@@ -583,6 +583,13 @@ function appendLog(level, msg, step) {
 
 // ---------------------------------------------------------------- live mode
 function applyServer(s) {
+  if (s.step < state.step) {
+    // The engine was restarted under this page: its step and log counters began again.
+    state.logSeq = 0;
+    Object.keys(state.hist).forEach((k) => { state.hist[k].length = 0; });
+    state.rlTrail.length = 0; state.frozenTrail.length = 0;
+    appendLog("WARN", "The engine was restarted; the charts start again from here.");
+  }
   state.step = s.step;
   $("stepVal").textContent = s.step;
   $("atpVal").textContent = num(s.atp, 3);
@@ -725,9 +732,18 @@ thermCanvas.addEventListener("mousemove", (e) => { if (paintingHeat) paintAt(e);
 function handleFileUpload(event) {
   const file = event.target.files[0];
   event.target.value = "";
+  analyseFile(file);
+}
+// Dropping a file anywhere on the page does the same as choosing one.
+window.addEventListener("dragover", (e) => { e.preventDefault(); });
+window.addEventListener("drop", (e) => {
+  e.preventDefault();
+  if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) analyseFile(e.dataTransfer.files[0]);
+});
+function analyseFile(file) {
   if (!file) return;
   if (!state.live) { appendLog("WARN", "Analysing a file needs the engine. Start it with `rcwe ui`, or run `rcwe analyze " + file.name + "`."); return; }
-  if (file.size > 64 * 1024 * 1024) { appendLog("CRIT", file.name + " is larger than 64 MB; use `rcwe analyze` on the command line instead."); return; }
+  if (file.size > 56 * 1024 * 1024) { appendLog("CRIT", file.name + " is larger than 56 MB; use `rcwe analyze` on the command line instead."); return; }
   const reader = new FileReader();
   reader.onload = async function (e) {
     appendLog("INFO", "Uploading " + file.name + " (" + Math.round(file.size / 1024) + " KB) for analysis…");
@@ -745,6 +761,7 @@ async function pollJob(id, name) {
   try {
     const res = await fetch("/api/jobs/" + id, { cache: "no-store" });
     const job = await res.json();
+    if (!res.ok) { appendLog("CRIT", name + ": the analysis is no longer available (" + (job.error || "HTTP " + res.status) + ")."); return; }
     if (job.status === "done") {
       const line = appendLog(job.events ? "CRIT" : "OK", name + ": " + job.headline + " ");
       const link = document.createElement("a");

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -39,9 +40,40 @@ def _series(values: np.ndarray, digits: int = 5) -> List[Optional[float]]:
     return [_num(v, digits) for v in values]
 
 
+def _precision(*arrays: np.ndarray) -> List[int]:
+    """
+    [significant digits, decimal places] needed to draw and read a series: enough to show its
+    own variation. A GPS latitude of 52.520008 that moves by 0.0002, or an energy counter at
+    1,234,567 that climbs by 0.5 a row, is a flat line at five significant digits.
+    """
+    finite = np.concatenate([np.asarray(a, dtype=float).ravel() for a in arrays]) if arrays else np.zeros(0)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return [5, 2]
+    top, spread = float(np.abs(finite).max()), float(np.ptp(finite))
+    if spread <= 0 or top <= 0:
+        return [6, 2]
+    digits = int(min(15, max(5, math.ceil(math.log10(top / spread)) + 4)))
+    decimals = int(min(12, max(0, math.ceil(-math.log10(spread)) + 2)))
+    return [digits, decimals]
+
+
+def _segments(flags: np.ndarray) -> List[List[int]]:
+    """Runs of true values as inclusive [first, last] row pairs."""
+    on = np.flatnonzero(np.asarray(flags) > 0)
+    if on.size == 0:
+        return []
+    breaks = np.flatnonzero(np.diff(on) > 1)
+    starts = np.concatenate([[on[0]], on[breaks + 1]])
+    ends = np.concatenate([on[breaks], [on[-1]]])
+    return [[int(a), int(b)] for a, b in zip(starts, ends)]
+
+
 def _keep_rows(result: DetectionResult, max_points: int) -> np.ndarray:
     """Rows to embed: everything for short logs; for long ones, full detail around events and
-    one or two representative rows (always including the highest score) per bucket elsewhere."""
+    one or two representative rows (always including the highest score) per bucket elsewhere.
+    Every event keeps its first, last and peak rows and its surroundings, however many events
+    there are, so that zooming to any of them has something to draw."""
     T = result.n_rows
     if T <= int(max_points * 1.5):
         return np.arange(T)
@@ -59,8 +91,12 @@ def _keep_rows(result: DetectionResult, max_points: int) -> np.ndarray:
         stride = max(1, len(window) // 400)
         chosen = set(window[::stride]) | {event.start, event.end, event.peak}
         if len(chosen) > budget:
-            continue
-        budget -= len(chosen)
+            # Out of room for full detail: keep the outline of the event and of what surrounds it.
+            chosen = {lo, hi, event.start, event.end, event.peak, max(event.start - 1, 0), min(event.end + 1, T - 1)}
+            chosen |= set(np.linspace(event.start, event.end, 6).astype(int).tolist())
+            chosen |= set(np.linspace(lo, hi, 8).astype(int).tolist())
+        else:
+            budget -= len(chosen)
         keep |= chosen
     return np.array(sorted(keep), dtype=int)
 
@@ -82,12 +118,14 @@ def build_report_data(
     panels = []
     for i in order[:max_panels]:
         flagged = find_events(result.sensor_scores[:, i], result.threshold)
+        digits, decimals = _precision(result.values[rows, i])
         panels.append({
             "name": result.sensors[i],
-            "actual": _series(result.values[rows, i]),
-            "expected": _series(result.expected[rows, i]),
+            "actual": _series(result.values[rows, i], digits),
+            "expected": _series(result.expected[rows, i], digits),
             "z": _series(result.residual_z[rows, i], 3),
-            "band": _num(result.band[i]),
+            "band": _num(result.band[i], 6),
+            "decimals": decimals,
             "flagged": [[int(a), int(b)] for a, b in flagged],
         })
 
@@ -99,12 +137,14 @@ def build_report_data(
             if name not in fc.sensors:
                 continue
             j = fc.sensors.index(name)
+            digits, decimals = _precision(*([fc.values[:, j]] + ([] if fc.history is None else [fc.history[:, j]])))
             fc_panels.append({
                 "name": name,
-                "history": [] if fc.history is None else _series(fc.history[:, j]),
-                "values": _series(fc.values[:, j]),
-                "lower": _series(fc.lower[:, j]),
-                "upper": _series(fc.upper[:, j]),
+                "history": [] if fc.history is None else _series(fc.history[:, j], digits),
+                "values": _series(fc.values[:, j], digits),
+                "lower": _series(fc.lower[:, j], digits),
+                "upper": _series(fc.upper[:, j], digits),
+                "decimals": decimals,
                 "skill": _num(fc.sensor_skill.get(name), 3),
                 "weight": _num(fc.model_weight.get(name), 3),
             })
@@ -139,6 +179,8 @@ def build_report_data(
         "score": _series(result.scores[rows], 4),
         "top": [int(top_sensor[r]) for r in rows],
         "labels": None if result.labels is None else [int(result.labels[r] > 0) for r in rows],
+        # Labelled stretches as row ranges over the whole log: one that falls between embedded rows is still drawn.
+        "label_spans": None if result.labels is None else _segments(result.labels),
         "panels": panels,
         "hidden_sensors": max(len(result.sensors) - len(panels), 0),
         "ranking": [
@@ -155,7 +197,9 @@ def render_report(result: DetectionResult, title: Optional[str] = None) -> str:
     # The payload sits inside a <script> block: make sure no column name can close it early.
     payload = payload.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
     page_title = (title or "RCWE anomaly report").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    return _TEMPLATE.replace("__TITLE__", page_title).replace("__DATA__", payload)
+    # One pass, so that a title containing "__DATA__" (a file can be called that) is left as text.
+    parts = {"__TITLE__": page_title, "__DATA__": payload}
+    return re.sub("__TITLE__|__DATA__", lambda match: parts[match.group(0)], _TEMPLATE)
 
 
 def write_report(result: DetectionResult, path: Union[str, Path], title: Optional[str] = None) -> str:
@@ -371,20 +415,40 @@ _TEMPLATE = r"""<!DOCTYPE html>
     if (a === 0) return "0";
     return v.toPrecision(3);
   }
+  /* A value with a fixed number of decimals (a panel knows how many its sensor needs). */
+  function fmtD(v, d) {
+    if (v === null || v === undefined || !isFinite(v)) return "n/a";
+    if (d === undefined || d === null) return fmt(v);
+    return v.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+  }
   function fmtTick(v, step) {
-    if (Math.abs(v) >= 10000) return v.toLocaleString(undefined, { maximumFractionDigits: 0 });
-    var d = step >= 1 ? 0 : Math.min(6, Math.ceil(-Math.log10(step)));
+    var d = step >= 1 ? 0 : Math.min(12, Math.ceil(-Math.log10(step) - 1e-9));
+    if (Math.abs(v) >= 10000) return v.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
     return v.toFixed(d);
   }
   function tickStep(list) { return list.length > 1 ? Math.abs(list[1] - list[0]) : 1; }
   function pct(v) { return (v === null || v === undefined || !isFinite(v)) ? "n/a" : (v >= 0 ? "+" : "") + Math.round(v * 100) + "%"; }
+  /* Padding for a value axis. A span of a few rounding errors (a constant near 1.7e15) counts as flat. */
+  function axisPad(lo, hi) {
+    var pad = (hi - lo) * 0.08, scale = Math.max(Math.abs(lo), Math.abs(hi));
+    if (!(pad > scale * 1e-9)) pad = scale * 0.05 || 1;
+    return pad;
+  }
   function ticks(lo, hi, n) {
     if (!(hi > lo)) { hi = lo + 1; }
     var raw = (hi - lo) / Math.max(n, 1), mag = Math.pow(10, Math.floor(Math.log10(raw))), norm = raw / mag;
-    var step = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * mag, out = [];
-    for (var v = Math.ceil(lo / step) * step; v <= hi + step * 1e-9; v += step) out.push(Math.abs(v) < step * 1e-9 ? 0 : v);
+    var step = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * mag, out = [], first = Math.ceil(lo / step);
+    /* Counted, not accumulated: adding a step that is below the value's precision would never arrive. */
+    for (var k = 0; k < 40; k++) { var v = (first + k) * step; if (v > hi + step * 1e-9) break; out.push(Math.abs(v) < step * 1e-9 ? 0 : v); }
     return out;
   }
+  /* Room for the value labels on the left: as wide as the longest one needs. */
+  function gutter(list, step) {
+    var longest = 0;
+    list.forEach(function (v) { longest = Math.max(longest, fmtTick(v, step).length); });
+    return Math.max(46, Math.min(150, 14 + longest * 6.6));
+  }
+  var clipCount = 0;
   function shortTime(label, sameDay) {
     var m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}:\d{2})(:\d{2})?/.exec(label);
     if (!m) return label.length > 16 ? label.slice(0, 16) : label;
@@ -421,14 +485,15 @@ _TEMPLATE = r"""<!DOCTYPE html>
     var H = opts.height || 190, M = { l: 46, r: 14, t: 14, b: 26 };
     var svgEl = s("svg", { role: "img", "aria-label": opts.label || "chart" });
     host.appendChild(svgEl);
+    var clipId = "rcwe-clip-" + (clipCount++);
     function draw() {
-      var W = Math.max(host.clientWidth, 260), iw = W - M.l - M.r, ih = H - M.t - M.b;
+      var W = Math.max(host.clientWidth, 260), ih = H - M.t - M.b;
       svgEl.setAttribute("viewBox", "0 0 " + W + " " + H); svgEl.setAttribute("height", H);
       while (svgEl.firstChild) svgEl.removeChild(svgEl.firstChild);
       var xs = opts.xs, i0 = lowerBound(xs, view[0]), i1 = Math.min(lowerBound(xs, view[1] + 1), xs.length) - 1;
-      if (i1 <= i0) { i0 = Math.max(0, Math.min(i0, xs.length - 2)); i1 = Math.min(xs.length - 1, i0 + 1); }
+      /* Take in one embedded row on either side of the window, so that lines run to its edges. */
+      i0 = Math.max(0, Math.min(i0, xs.length - 1) - 1); i1 = Math.min(xs.length - 1, Math.max(i1, 0) + 1);
       var x0 = view[0], x1 = Math.max(view[1], view[0] + 1);
-      function X(row) { return M.l + (row - x0) / (x1 - x0) * iw; }
       var lo = Infinity, hi = -Infinity;
       opts.lines.forEach(function (ln) { for (var i = i0; i <= i1; i++) { var v = ln.v[i]; if (v === null) continue; if (v < lo) lo = v; if (v > hi) hi = v; } });
       if (opts.band) for (var i = i0; i <= i1; i++) { var c = opts.band.v[i]; if (c === null) continue; lo = Math.min(lo, c - opts.band.half); hi = Math.max(hi, c + opts.band.half); }
@@ -439,47 +504,53 @@ _TEMPLATE = r"""<!DOCTYPE html>
         var cap = Math.max(opts.threshold * 4, 1);
         if (hi > cap * 1.6) { clampTop = cap * 1.6; hi = clampTop; }
         hi = Math.max(hi, opts.threshold * 1.35);
-      } else { var pad = (hi - lo) * 0.08 || Math.abs(hi) * 0.05 || 1; lo -= pad; hi += pad; }
+      } else { var pad = axisPad(lo, hi); lo -= pad; hi += pad; }
       function Y(v) { return M.t + (1 - (Math.min(v, hi) - lo) / (hi - lo)) * ih; }
 
       var yt = ticks(lo, hi, 4), ystep = tickStep(yt);
+      var left = gutter(yt, ystep), iw = W - left - M.r;
+      M = { l: left, r: M.r, t: M.t, b: M.b };
+      function X(row) { return M.l + (row - x0) / (x1 - x0) * iw; }
+      /* Everything that follows the data is clipped to the plot area: a zoomed window may end between two embedded rows. */
+      var clip = s("clipPath", { id: clipId }); clip.appendChild(s("rect", { x: M.l, y: M.t - 2, width: iw, height: ih + 4 })); svgEl.appendChild(clip);
+      var plot = s("g", { "clip-path": "url(#" + clipId + ")" });
       yt.forEach(function (v) {
         svgEl.appendChild(s("line", { x1: M.l, x2: M.l + iw, y1: Y(v), y2: Y(v), stroke: "var(--grid)", "stroke-width": 1 }));
         var t = s("text", { x: M.l - 8, y: Y(v) + 3.5, "text-anchor": "end" }); t.textContent = fmtTick(v, ystep); svgEl.appendChild(t);
       });
       svgEl.appendChild(s("line", { x1: M.l, x2: M.l + iw, y1: M.t + ih, y2: M.t + ih, stroke: "var(--axis)", "stroke-width": 1 }));
       var sameDay = opts.labels[i0].slice(0, 10) === opts.labels[i1].slice(0, 10);
-      var nt = Math.max(2, Math.min(6, Math.floor(iw / 110)));
+      var nt = Math.max(2, Math.min(6, Math.floor(iw / 110))), lastIdx = -1;
       for (var k = 0; k <= nt; k++) {
         var idx = nearest(xs, x0 + (x1 - x0) * k / nt);
+        if (idx === lastIdx || xs[idx] < x0 - 0.5 || xs[idx] > x1 + 0.5) continue;      /* one label per embedded row, inside the window */
+        lastIdx = idx;
         var tx = s("text", { x: X(xs[idx]), y: H - 8, "text-anchor": k === 0 ? "start" : k === nt ? "end" : "middle" });
         tx.textContent = shortTime(opts.labels[idx], sameDay); svgEl.appendChild(tx);
       }
+      svgEl.appendChild(plot);
 
       var lastLabelX = -Infinity;
       (opts.spans || []).forEach(function (sp, n) {
         if (sp[1] < x0 || sp[0] > x1) return;
         var a = Math.max(X(sp[0] - 0.5), M.l), b = Math.min(X(sp[1] + 0.5), M.l + iw);
-        svgEl.appendChild(s("rect", { x: a, y: M.t, width: Math.max(b - a, 2), height: ih, fill: "var(--event)" }));
+        plot.appendChild(s("rect", { x: a, y: M.t, width: Math.max(b - a, 2), height: ih, fill: "var(--event)" }));
         if (opts.spanLabels && (a + b) / 2 - lastLabelX > 22) { lastLabelX = (a + b) / 2; var lb = s("text", { x: (a + b) / 2, y: M.t - 3, "text-anchor": "middle", class: "strong" }); lb.textContent = "#" + opts.spanLabels[n]; svgEl.appendChild(lb); }
       });
-      if (opts.truth) {
-        var run = -1;
-        for (var i = i0; i <= i1 + 1; i++) {
-          var on = i <= i1 && opts.truth[i] === 1;
-          if (on && run < 0) run = i;
-          if (!on && run >= 0) { var ta = X(xs[run] - 0.5), tb = X(xs[i - 1] + 0.5); svgEl.appendChild(s("rect", { x: ta, y: M.t + ih + 2, width: Math.max(tb - ta, 2), height: 4, rx: 2, fill: "var(--truth)" })); run = -1; }
-        }
-      }
+      (opts.truthSpans || []).forEach(function (sp) {
+        if (sp[1] < x0 || sp[0] > x1) return;
+        var ta = Math.max(X(sp[0] - 0.5), M.l), tb = Math.min(X(sp[1] + 0.5), M.l + iw);
+        svgEl.appendChild(s("rect", { x: ta, y: M.t + ih + 2, width: Math.max(tb - ta, 2), height: 4, rx: 2, fill: "var(--truth)" }));
+      });
       if (opts.band) {
         var up = "", dn = "";
         for (var i = i0; i <= i1; i++) { var c = opts.band.v[i]; if (c === null) continue; up += (up ? "L" : "M") + X(xs[i]).toFixed(1) + "," + Y(c + opts.band.half).toFixed(1); dn = "L" + X(xs[i]).toFixed(1) + "," + Y(c - opts.band.half).toFixed(1) + dn; }
-        if (up) svgEl.appendChild(s("path", { d: up + dn + "Z", fill: "var(--band)" }));
+        if (up) plot.appendChild(s("path", { d: up + dn + "Z", fill: "var(--band)" }));
       }
       opts.lines.forEach(function (ln) {
         var d = "", pen = false;
         for (var i = i0; i <= i1; i++) { var v = ln.v[i]; if (v === null) { pen = false; continue; } d += (pen ? "L" : "M") + X(xs[i]).toFixed(1) + "," + Y(v).toFixed(1); pen = true; }
-        svgEl.appendChild(s("path", { d: d, fill: "none", stroke: ln.cls === "expected" ? "var(--muted)" : "var(--series)", "stroke-width": ln.w || 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+        if (d) plot.appendChild(s("path", { d: d, fill: "none", stroke: ln.cls === "expected" ? "var(--muted)" : "var(--series)", "stroke-width": ln.w || 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
       });
       if (opts.threshold !== undefined) {
         svgEl.appendChild(s("line", { x1: M.l, x2: M.l + iw, y1: Y(opts.threshold), y2: Y(opts.threshold), stroke: "var(--ink2)", "stroke-width": 1, "stroke-dasharray": "5 4" }));
@@ -495,6 +566,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
       var cur = -1;
       function focusAt(i, evt) {
         cur = Math.max(i0, Math.min(i1, i));
+        if (xs[cur] < x0 - 0.5 || xs[cur] > x1 + 0.5) { leave(); return; }      /* nothing embedded under the pointer */
         var cx = X(xs[cur]);
         cross.setAttribute("x1", cx); cross.setAttribute("x2", cx); cross.setAttribute("visibility", "visible");
         opts.lines.forEach(function (ln, n) { var v = ln.v[cur]; if (v === null) { dots[n].setAttribute("visibility", "hidden"); return; } dots[n].setAttribute("cx", cx); dots[n].setAttribute("cy", Y(v)); dots[n].setAttribute("visibility", "visible"); });
@@ -573,7 +645,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   timeChart(document.getElementById("scorechart"), {
     xs: D.index, labels: D.time, height: 230, label: "Anomaly score over time",
     lines: [{ v: D.score, cls: "score", w: 2 }], threshold: D.threshold, zeroBased: true,
-    spans: D.events.map(function (e) { return [e.start, e.end]; }), spanLabels: D.events.map(function (e) { return e.index; }), truth: D.labels,
+    spans: D.events.map(function (e) { return [e.start, e.end]; }), spanLabels: D.events.map(function (e) { return e.index; }), truthSpans: D.label_spans,
     tooltip: function (i) {
       var rows = [{ label: "Anomaly score", value: fmt(D.score[i]), key: "actual" }];
       if (D.score[i] > D.threshold) rows.push({ label: "Worst sensor", value: D.sensors[D.top[i]] });
@@ -634,7 +706,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
       xs: D.index, labels: D.time, height: 170, label: p.name + ": actual and expected readings",
       lines: [{ v: p.expected, cls: "expected", w: 1.5 }, { v: p.actual, cls: "actual", w: 2 }],
       band: { v: p.expected, half: p.band }, spans: p.flagged,
-      tooltip: function (i) { return { title: D.time[i], rows: [{ label: "Actual", value: fmt(p.actual[i]), key: "actual" }, { label: "Expected", value: fmt(p.expected[i]), key: "expected" }, { label: "Surprise", value: (p.z[i] >= 0 ? "+" : "") + fmt(p.z[i]) + " sigma" }] }; }
+      tooltip: function (i) { return { title: D.time[i], rows: [{ label: "Actual", value: fmtD(p.actual[i], p.decimals), key: "actual" }, { label: "Expected", value: fmtD(p.expected[i], p.decimals), key: "expected" }, { label: "Surprise", value: (p.z[i] >= 0 ? "+" : "") + fmt(p.z[i]) + " sigma" }] }; }
     });
   });
 
@@ -654,15 +726,18 @@ _TEMPLATE = r"""<!DOCTYPE html>
       (function () {
         var H = 170, M = { l: 46, r: 14, t: 14, b: 26 }, svgEl = s("svg", { role: "img", "aria-label": p.name + " forecast" }); host.appendChild(svgEl);
         function render() {
-          var W = Math.max(host.clientWidth, 260), iw = W - M.l - M.r, ih = H - M.t - M.b, N = xs.length;
+          var W = Math.max(host.clientWidth, 260), ih = H - M.t - M.b, N = xs.length;
           svgEl.setAttribute("viewBox", "0 0 " + W + " " + H); svgEl.setAttribute("height", H);
           while (svgEl.firstChild) svgEl.removeChild(svgEl.firstChild);
           var lo = Infinity, hi = -Infinity;
           p.history.forEach(function (v) { if (v !== null) { lo = Math.min(lo, v); hi = Math.max(hi, v); } });
-          p.lower.forEach(function (v) { lo = Math.min(lo, v); }); p.upper.forEach(function (v) { hi = Math.max(hi, v); });
-          var pad = (hi - lo) * 0.08 || 1; lo -= pad; hi += pad;
-          function X(i) { return M.l + i / Math.max(N - 1, 1) * iw; } function Y(v) { return M.t + (1 - (v - lo) / (hi - lo)) * ih; }
+          p.lower.forEach(function (v) { if (v !== null) lo = Math.min(lo, v); }); p.upper.forEach(function (v) { if (v !== null) hi = Math.max(hi, v); });
+          if (!isFinite(lo)) { lo = 0; hi = 1; }
+          var pad = axisPad(lo, hi); lo -= pad; hi += pad;
           var yt = ticks(lo, hi, 4), ystep = tickStep(yt);
+          var left = gutter(yt, ystep), iw = W - left - M.r;
+          M = { l: left, r: M.r, t: M.t, b: M.b };
+          function X(i) { return M.l + i / Math.max(N - 1, 1) * iw; } function Y(v) { return M.t + (1 - (v - lo) / (hi - lo)) * ih; }
           yt.forEach(function (v) { svgEl.appendChild(s("line", { x1: M.l, x2: M.l + iw, y1: Y(v), y2: Y(v), stroke: "var(--grid)", "stroke-width": 1 })); var t = s("text", { x: M.l - 8, y: Y(v) + 3.5, "text-anchor": "end" }); t.textContent = fmtTick(v, ystep); svgEl.appendChild(t); });
           svgEl.appendChild(s("line", { x1: M.l, x2: M.l + iw, y1: M.t + ih, y2: M.t + ih, stroke: "var(--axis)", "stroke-width": 1 }));
           var sameDay = labels[0].slice(0, 10) === labels[N - 1].slice(0, 10);
@@ -682,7 +757,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
           function at(i, evt) {
             cur = Math.max(0, Math.min(N - 1, i)); cross.setAttribute("x1", X(cur)); cross.setAttribute("x2", X(cur)); cross.setAttribute("visibility", "visible");
             if (!evt) { var b = svgEl.getBoundingClientRect(); evt = { clientX: b.left + X(cur) * b.width / W, clientY: b.top + M.t + 8 }; }
-            var rows = cur < nh ? [{ label: "Observed", value: fmt(p.history[cur]), key: "expected" }] : [{ label: "Forecast", value: fmt(p.values[cur - nh]), key: "actual" }, { label: "80% interval", value: fmt(p.lower[cur - nh]) + " to " + fmt(p.upper[cur - nh]) }];
+            var rows = cur < nh ? [{ label: "Observed", value: fmtD(p.history[cur], p.decimals), key: "expected" }] : [{ label: "Forecast", value: fmtD(p.values[cur - nh], p.decimals), key: "actual" }, { label: "80% interval", value: fmtD(p.lower[cur - nh], p.decimals) + " to " + fmtD(p.upper[cur - nh], p.decimals) }];
             showTip(evt, labels[cur] || ("step " + cur), rows);
           }
           function leave() { cross.setAttribute("visibility", "hidden"); hideTip(); }

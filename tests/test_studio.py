@@ -120,3 +120,68 @@ def test_mission_control_api_is_live(studio):
     assert _call(studio, "/api/v10/state")[1]["regime"] == 2
     assert _call(studio, "/api/v10/action?type=launch_missiles", {})[0] == 400
     assert _call(studio, "/api/v10/action?type=paint&r=abc", {})[0] == 400
+
+
+def test_pages_cannot_be_framed_by_another_site(studio):
+    for path in ("/", "/mission-control", "/api/health"):
+        headers = _call(studio, path, raw=True)[2]
+        assert headers.get("Content-Security-Policy") == "frame-ancestors 'self'", path
+        assert headers.get("X-Frame-Options") == "SAMEORIGIN", path
+
+
+def test_wrongly_typed_fields_are_a_bad_request_not_a_server_error(studio):
+    text = "a,b\n1,2\n3,4\n"
+    for field, value in (("sensitivity", None), ("sensitivity", [1]), ("sensitivity", {}), ("sensitivity", True),
+                         ("forecast", 1e999), ("train_fraction", "half")):
+        assert _call(studio, "/api/analyze", {"text": text, field: value})[0] == 400, (field, value)
+    deep = b"[" * 100000
+    assert _call(studio, "/api/analyze", deep, {"Content-Type": "application/json"})[0] == 400
+
+
+def test_host_header_rules():
+    from rcwe.toolkit.studio import _host_allowed
+
+    # Bound to this machine only: loopback names, with the right port (or none at all on port 80).
+    assert _host_allowed("127.0.0.1:8765", "127.0.0.1", 8765) and _host_allowed("localhost:8765", "127.0.0.1", 8765)
+    assert _host_allowed("[::1]:8765", "127.0.0.1", 8765) and _host_allowed("127.0.0.1", "127.0.0.1", 80)
+    assert not _host_allowed("evil.example:8765", "127.0.0.1", 8765) and not _host_allowed("127.0.0.1:9999", "127.0.0.1", 8765)
+    assert not _host_allowed("192.168.1.20:8765", "127.0.0.1", 8765) and not _host_allowed("", "127.0.0.1", 8765)
+    # Bound to the network: any address literal is fine, a name that could be re-pointed at us is not.
+    assert _host_allowed("192.168.1.20:8765", "0.0.0.0", 8765) and _host_allowed("localhost:8765", "0.0.0.0", 8765)
+    assert not _host_allowed("evil.example:8765", "0.0.0.0", 8765)
+
+
+def test_finished_analyses_make_room_and_running_ones_are_never_dropped(tmp_path):
+    from rcwe.toolkit.studio import JobRunner
+
+    (tmp_path / "0123456789abcdef").mkdir()                      # left behind by an earlier run
+    (tmp_path / "fedcba9876543210").mkdir()
+    (tmp_path / "my notes").mkdir()                              # not ours: never touched
+    runner = JobRunner(tmp_path, keep=1)
+    assert sorted(p.name for p in tmp_path.iterdir()) in (["0123456789abcdef", "my notes"], ["fedcba9876543210", "my notes"])
+
+    rows = "\n".join(f"{i},{(i * 7) % 11},{(i * 3) % 5}" for i in range(60))
+    ids = [runner.submit({"name": f"log{k}.csv", "text": "t,a,b\n" + rows}) for k in range(3)]
+    assert all(runner.status(job) is not None for job in ids)   # queued and running jobs all stay, whatever `keep` says
+    deadline = time.time() + 240
+    while time.time() < deadline and any(runner.status(job)["status"] not in ("done", "error") for job in ids):
+        time.sleep(0.2)
+    assert [runner.status(job)["status"] for job in ids] == ["done", "done", "done"]
+    assert not list((tmp_path / ids[-1]).glob("upload.*"))      # the results are kept, not a copy of the upload
+    last = runner.submit({"name": "log3.csv", "text": "t,a,b\n" + rows})
+    assert all(runner.status(job) is None for job in ids)       # finished ones made room ...
+    assert not any((tmp_path / job).exists() for job in ids)    # ... and took their folders with them
+    assert runner.status(last) is not None and (tmp_path / "my notes").exists()
+
+
+def test_a_server_that_cannot_start_says_why_and_leaves_nothing_behind(tmp_path):
+    import threading as _threading
+
+    before = _threading.active_count()
+    taken = create_server("127.0.0.1", 0, jobs_root=tmp_path / "jobs")
+    try:
+        with pytest.raises(OSError):
+            create_server("127.0.0.1", taken.server_address[1], jobs_root=tmp_path / "jobs")
+    finally:
+        taken.server_close()
+    assert _threading.active_count() == before and not (tmp_path / "jobs").exists()

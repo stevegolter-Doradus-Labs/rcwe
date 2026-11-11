@@ -8,15 +8,23 @@ Nothing leaves the computer: files are posted to this local server, analysed by 
 `TelemetryModel` the command line uses, and the results are written to the output folder.
 
 The server binds to 127.0.0.1 by default and has no login. It refuses requests whose Host
-or Origin header does not match its own address, so a web page open in another tab cannot
+or Origin header does not match its own address, answers its API only to its own pages,
+and forbids other sites from framing those pages, so a web page open in another tab cannot
 drive it. Bind it to another interface only on a network you trust.
+
+The 25 most recent analyses are kept in the output folder; older ones are removed, so
+download what you want to keep.
 """
 from __future__ import annotations
 
+import errno
+import ipaddress
 import json
 import queue
 import re
 import secrets
+import shutil
+import socket
 import threading
 import time
 import webbrowser
@@ -61,8 +69,18 @@ class JobRunner:
         self._order: List[str] = []
         self._lock = threading.Lock()
         self._queue: "queue.Queue[Tuple[str, Dict[str, Any]]]" = queue.Queue()
-        self._worker = threading.Thread(target=self._work, name="rcwe-studio-worker", daemon=True)
-        self._worker.start()
+        self._worker: Optional[threading.Thread] = None      # started with the first job
+        self._sweep()
+
+    def _sweep(self) -> None:
+        """Remove analyses left by earlier runs beyond the `keep` most recent (only folders this class names)."""
+        try:
+            folders = [f for f in self.root.iterdir() if f.is_dir() and _JOB_ID.match(f.name)]
+            folders.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+        except OSError:
+            return
+        for folder in folders[self.keep:]:
+            shutil.rmtree(folder, ignore_errors=True)
 
     # ---- public ------------------------------------------------------------------------
     def submit(self, spec: Dict[str, Any]) -> str:
@@ -71,15 +89,22 @@ class JobRunner:
         folder = self.root / job_id
         folder.mkdir(parents=True, exist_ok=True)
         with self._lock:
+            busy = any(job["status"] in ("queued", "running") for job in self._jobs.values())
             self._jobs[job_id] = {
                 "job": job_id, "name": spec["name"], "status": "queued", "stage": "queued", "fraction": 0.0,
-                "message": "Waiting for the previous analysis to finish" if self._queue.qsize() else "Starting",
+                "message": "Waiting for the previous analysis to finish" if busy else "Starting",
                 "created": time.time(), "folder": str(folder), "files": [],
             }
             self._order.append(job_id)
-            for stale in self._order[:-self.keep]:
-                self._jobs.pop(stale, None)
-            self._order = self._order[-self.keep:]
+            # Only finished analyses make room for new ones: one that is queued or running is never dropped.
+            finished = [j for j in self._order if self._jobs[j]["status"] in ("done", "error")]
+            excess = len(self._order) - self.keep
+            for stale in finished[:max(excess, 0)]:
+                shutil.rmtree(self._jobs.pop(stale)["folder"], ignore_errors=True)
+                self._order.remove(stale)
+            if self._worker is None:
+                self._worker = threading.Thread(target=self._work, name="rcwe-studio-worker", daemon=True)
+                self._worker.start()
         self._queue.put((job_id, spec))
         return job_id
 
@@ -115,18 +140,20 @@ class JobRunner:
         if train_text is not None and not isinstance(train_text, str):
             raise _BadRequest(400, "train_text must be text.")
         sensitivity = spec.get("sensitivity", "medium")
-        if isinstance(sensitivity, str) and sensitivity not in ("low", "medium", "high"):
+        if not (isinstance(sensitivity, str) and sensitivity in ("low", "medium", "high")):
             try:
+                if isinstance(sensitivity, bool) or not isinstance(sensitivity, (str, int, float)):
+                    raise TypeError
                 sensitivity = float(sensitivity)
-            except ValueError:
-                raise _BadRequest(400, "sensitivity must be low, medium, high or a number.")
-        if not isinstance(sensitivity, str) and not 0.5 <= float(sensitivity) <= 100:
-            raise _BadRequest(400, "A numeric sensitivity must be between 0.5 and 100 sigmas.")
+            except (TypeError, ValueError, OverflowError):
+                raise _BadRequest(400, "sensitivity must be low, medium, high or a number.") from None
+            if not 0.5 <= sensitivity <= 100:
+                raise _BadRequest(400, "A numeric sensitivity must be between 0.5 and 100 sigmas.")
         try:
             fraction = float(spec.get("train_fraction", 0.6))
             forecast = int(spec.get("forecast", 0) or 0)
-        except (TypeError, ValueError):
-            raise _BadRequest(400, "train_fraction and forecast must be numbers.")
+        except (TypeError, ValueError, OverflowError):
+            raise _BadRequest(400, "train_fraction and forecast must be numbers.") from None
         if not 0.1 <= fraction <= 0.95:
             raise _BadRequest(400, "train_fraction must be between 0.1 and 0.95.")
         if not 0 <= forecast <= 2000:
@@ -165,7 +192,8 @@ class JobRunner:
         from rcwe.toolkit import TelemetryModel, load_table
         from rcwe.toolkit.demo import split_demo
 
-        folder = Path(self._jobs[job_id]["folder"])
+        with self._lock:
+            folder = Path(self._jobs[job_id]["folder"])
         self._update(job_id, status="running", stage="prepare", message="Reading the data")
 
         def progress(stage: str, fraction: float, message: str) -> None:
@@ -180,12 +208,18 @@ class JobRunner:
             # the content can never be mistaken for a file name.
             upload = folder / f"upload{spec['suffix']}"
             upload.write_text(spec["text"], encoding="utf-8")
-            table = load_table(upload)
+            try:
+                table = load_table(upload)
+            finally:
+                upload.unlink(missing_ok=True)        # the results are kept, not a second copy of the data
             table.source = spec["name"]
             if spec["train_text"]:
                 train_file = folder / f"train{spec['train_suffix']}"
                 train_file.write_text(spec["train_text"], encoding="utf-8")
-                train_source = load_table(train_file)
+                try:
+                    train_source = load_table(train_file)
+                finally:
+                    train_file.unlink(missing_ok=True)
                 train_source.source = spec["train_name"] or "training log"
                 learned_from = f"{spec['train_name'] or 'the training log'} ({train_source.n_rows:,} rows)"
             else:
@@ -224,9 +258,19 @@ class _State:
     """Shared by every request handler of one server."""
 
     def __init__(self, jobs_root: Optional[Path] = None):
-        self.jobs = JobRunner(jobs_root)
+        self._jobs_root = jobs_root
+        self._jobs: Optional[JobRunner] = None
         self._engine: Any = None
         self._engine_lock = threading.Lock()
+
+    @property
+    def jobs(self) -> JobRunner:
+        # Created on first use, after the server has its socket: a start that fails (port busy)
+        # leaves no folder and no thread behind.
+        with self._engine_lock:
+            if self._jobs is None:
+                self._jobs = JobRunner(self._jobs_root)
+            return self._jobs
 
     def engine(self) -> Any:
         with self._engine_lock:
@@ -234,6 +278,37 @@ class _State:
                 from rcwe.ui.mission_control import MissionControlEngine
                 self._engine = MissionControlEngine()
             return self._engine
+
+
+def _host_allowed(header: str, bound: str, port: int) -> bool:
+    """
+    Is this Host header one the server answers to? The check is what stops DNS rebinding: a
+    page on evil.example that resolves its own name to this machine still sends
+    "Host: evil.example". Bound to loopback, only loopback names pass. Bound to a network
+    interface, any IP literal passes (no DNS is involved in reaching one), as do `localhost`
+    and this machine's own name.
+    """
+    try:
+        parsed = urlparse("//" + header)
+        name, asked = (parsed.hostname or "").lower(), parsed.port
+    except ValueError:
+        return False
+    if not name or (asked != port and not (asked is None and port == 80)):
+        return False
+    if name in ("localhost", "127.0.0.1", "::1") or name == str(bound).lower():
+        return True
+    if bound in ("127.0.0.1", "::1", "localhost"):
+        return False
+    try:
+        ipaddress.ip_address(name)
+        return True
+    except ValueError:
+        pass
+    try:
+        own = {socket.gethostname().lower(), socket.getfqdn().lower()}
+    except OSError:
+        own = set()
+    return name in own
 
 
 def _make_handler(state: _State) -> type:
@@ -251,6 +326,9 @@ def _make_handler(state: _State) -> type:
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
+            # Another site must not be able to show these pages in a frame and steer clicks into them.
+            self.send_header("Content-Security-Policy", "frame-ancestors 'self'")
+            self.send_header("X-Frame-Options", "SAMEORIGIN")
             for key, value in (extra or {}).items():
                 self.send_header(key, value)
             self.end_headers()
@@ -265,10 +343,7 @@ def _make_handler(state: _State) -> type:
         def _guard(self, writing: bool, path: str) -> None:
             """Only talk to pages that this server itself served (blocks cross-site and DNS-rebinding requests)."""
             host = (self.headers.get("Host") or "").strip().lower()
-            bound = self.server.server_address[0]
-            port = self.server.server_address[1]
-            allowed = {f"{bound}:{port}", f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
-            if bound in ("127.0.0.1", "::1", "localhost") and host not in allowed:
+            if not _host_allowed(host, self.server.server_address[0], self.server.server_address[1]):
                 raise _BadRequest(403, "Request refused: unexpected Host header.")
             origin = self.headers.get("Origin")
             if origin and urlparse(origin).netloc.lower() != host:
@@ -295,8 +370,8 @@ def _make_handler(state: _State) -> type:
                 return {}
             try:
                 return json.loads(raw.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                raise _BadRequest(400, "The request body is not valid JSON.")
+            except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+                raise _BadRequest(400, "The request body is not valid JSON.") from None
 
         def _dispatch(self, writing: bool) -> None:
             try:
@@ -376,11 +451,18 @@ def _make_handler(state: _State) -> type:
     return Handler
 
 
+class _Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+
+class _ServerV6(_Server):
+    address_family = socket.AF_INET6
+
+
 def create_server(host: str = "127.0.0.1", port: int = 8765, jobs_root: Optional[Path] = None) -> ThreadingHTTPServer:
     """Build the server without starting it (use `serve_forever()` on the result)."""
-    server = ThreadingHTTPServer((host, port), _make_handler(_State(jobs_root)))
-    server.daemon_threads = True
-    return server
+    kind = _ServerV6 if ":" in host else _Server
+    return kind((host, port), _make_handler(_State(jobs_root)))
 
 
 def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True, start_page: str = "/") -> None:
@@ -390,8 +472,9 @@ def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True, 
         try:
             server = create_server(host, candidate)
             break
-        except OSError:
-            continue
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE:        # a bad address is not a busy port
+                raise OSError(f"Could not start the server on {host}: {exc.strerror or exc}.") from exc
     if server is None:
         raise OSError(f"No free port between {port} and {port + 19}. Pass --port to choose another.")
     actual = server.server_address[1]
@@ -556,6 +639,7 @@ STUDIO_HTML = r"""<!DOCTYPE html>
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
   var files = { scan: null, train: null }, running = false;
+  var LIMIT = 56 * 1024 * 1024;       /* both files travel in one request, which the server caps at 64 MB */
 
   function readFile(file) {
     return new Promise(function (resolve, reject) {
@@ -567,7 +651,9 @@ STUDIO_HTML = r"""<!DOCTYPE html>
   }
   function choose(kind, file) {
     if (!file) return;
-    if (file.size > 64 * 1024 * 1024) { showError(file.name + " is larger than 64 MB. Use `rcwe analyze` on the command line for files this big."); return; }
+    if (file.size > LIMIT) { showError(file.name + " is larger than 56 MB. Use `rcwe analyze` on the command line for files this big."); return; }
+    var other = kind === "scan" ? files.train : files.scan;
+    if (other && file.size + other.size > LIMIT) { showError("The two files together are larger than 56 MB. Use `rcwe analyze --train` on the command line for files this big."); return; }
     files[kind] = file;
     $(kind + "Name").textContent = file.name;
     $(kind + "Hint").textContent = (file.size / 1024).toFixed(0) + " KB · click to change";

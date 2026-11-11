@@ -96,3 +96,47 @@ def test_report_includes_forecast_when_attached():
     by_name = {p["name"]: p for p in data["forecast"]["panels"]}
     assert by_name["pressure"]["skill"] is None and by_name["pressure"]["weight"] == 0.0   # NaN never reaches the page
     assert len(by_name["flow"]["history"]) == 50 and by_name["flow"]["upper"][0] > by_name["flow"]["lower"][0]
+
+
+def test_series_keep_enough_digits_to_show_their_own_variation():
+    # A latitude that moves in the fifth decimal and a counter that climbs by 0.5 near 1.2 million:
+    # at a fixed five significant digits both were drawn as flat lines under a "critical" event.
+    result = _result(rows=400, sensors=("energy_kwh_total", "gps_lat_deg"), labels=False)
+    steps = np.arange(400)
+    result.values[:, 0] = 1234567.8 + 0.5 * steps
+    result.values[:, 1] = 52.520008 + 1e-5 * np.sin(steps / 9.0)
+    result.expected = result.values.copy()
+    data = build_report_data(result)
+    panels = {panel["name"]: panel for panel in data["panels"]}
+    assert len(set(panels["gps_lat_deg"]["actual"])) > 50 and panels["gps_lat_deg"]["decimals"] >= 6
+    assert len(set(panels["energy_kwh_total"]["actual"])) == 400
+
+
+def test_every_event_and_every_labelled_stretch_survives_thinning():
+    rows = 120000
+    result = _result(rows=rows, labels=True)
+    scores = np.abs(np.random.default_rng(1).normal(size=rows))
+    result.events = []
+    for k in range(160):                                        # far more events than the detail budget covers
+        t = 500 + 740 * k
+        scores[t] = 6.0 + 0.05 * k
+        result.events.append(AnomalyEvent(index=k + 1, start=t, end=t, start_time=str(t), end_time=str(t), peak=t,
+                                          peak_time=str(t), peak_score=float(scores[t]), severity="low", kind="spike"))
+    result.scores = scores
+    result.labels = np.zeros(rows, dtype=int)
+    for k in range(12):                                         # twelve labelled incidents, most of them undetected
+        result.labels[10000 * k + 3000:10000 * k + 3020] = 1
+    data = build_report_data(result)
+    kept = set(data["index"])
+    for event in result.events:
+        assert {event.start - 1, event.start, event.start + 1} <= kept, event.index     # something to draw when zoomed in
+    assert data["label_spans"] == [[10000 * k + 3000, 10000 * k + 3019] for k in range(12)]
+    assert len(data["index"]) < 12000
+
+
+def test_awkward_titles_and_constant_columns_do_not_break_the_page():
+    page = render_report(_result(labels=False), title="RCWE analysis: __DATA__.csv")
+    assert re.search(r"<title>RCWE analysis: __DATA__\.csv</title>", page)           # the title is text, not the payload
+    assert page.count('id="rcwe-data"') == 1
+    # The tick loop counts steps instead of adding them (adding 0.1 to 1.7e15 never arrives).
+    assert "for (var k = 0; k < 40; k++)" in page and "v += step" not in page
