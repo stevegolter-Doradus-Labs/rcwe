@@ -130,7 +130,8 @@ class AnomalyEvent:
     severity: str                      # low | medium | high | critical
     kind: str                          # spike | sustained deviation | out of range | flatline
     sensors: List[Dict[str, Any]] = field(default_factory=list)
-    description: str = ""
+    description: str = ""              # full sentence, including when it happened
+    what: str = ""                     # the same finding without the time span (for tables)
 
     @property
     def duration(self) -> int:
@@ -147,7 +148,7 @@ class AnomalyEvent:
             "peak": self.peak, "peak_time": self.peak_time, "peak_score": _round(self.peak_score, 3),
             "severity": self.severity, "kind": self.kind,
             "sensors": [{k: _round(v, 5) for k, v in s.items()} for s in self.sensors],
-            "description": self.description,
+            "description": self.description, "what": self.what,
         }
 
 

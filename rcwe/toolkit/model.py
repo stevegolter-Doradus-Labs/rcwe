@@ -801,13 +801,14 @@ class TelemetryModel:
                         f"({_fmt(lead['actual'])} vs {_fmt(lead['expected'])} expected at the peak)")
             others = [s["name"] for s in involved[1:4]]
             also = f"; also involved: {', '.join(others)}" if others else ""
-            description = f"{when} ({length}): {what}, peaking at {peak_score:.1f} sigma{also}."
+            finding = f"{what}, peaking at {peak_score:.1f} sigma{also}."
         else:
-            description = f"{when} ({length}): anomaly score peaked at {peak_score:.1f} sigma."
+            finding = f"anomaly score peaked at {peak_score:.1f} sigma."
+        description = f"{when} ({length}): {finding}"
         return AnomalyEvent(
             index=index, start=a, end=b, start_time=stamps[a], end_time=stamps[b], peak=peak, peak_time=stamps[peak],
             peak_score=peak_score, severity=_severity(peak_score / threshold), kind=kind,
-            sensors=involved, description=description,
+            sensors=involved, description=description, what=finding,
         )
 
     def _model_info(self) -> Dict[str, Any]:
