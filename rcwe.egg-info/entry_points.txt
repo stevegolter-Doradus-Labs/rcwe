@@ -1,2 +1,0 @@
-[console_scripts]
-rcwe-bench = rcwe.cli:main

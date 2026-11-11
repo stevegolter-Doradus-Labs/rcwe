@@ -1,8 +1,0 @@
-torch>=2.1.0
-numpy>=1.26.0
-
-[dev]
-pytest>=7.4.0
-
-[gpu]
-triton>=2.1.0

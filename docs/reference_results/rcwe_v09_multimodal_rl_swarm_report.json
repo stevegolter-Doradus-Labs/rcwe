@@ -1,0 +1,26 @@
+{
+  "version": "0.9.0",
+  "track1_multimodal": {
+    "rcwe_multimodal_mse": 0.005998,
+    "tf_multimodal_mse": 1.758187,
+    "improvement_ratio": 293.11,
+    "psi_kb": 8.0,
+    "cross_modal_coherence": 0.6784,
+    "diagnostic_nl": "CRITICAL MULTIMODAL RESONANCE: 2D Thermal hotspot (z=2.58 sigma) phase-locked with SCADA bus sag (coherence=0.678, surprise=4.324). 3-Factor Fast Synapses adapted online; MDO recommends immediate tap-changer trim."
+  },
+  "track2_symplectic_rl": {
+    "rcwe_rl_post_mutation_deviation": 0.050407,
+    "frozen_policy_post_mutation_deviation": 0.249492,
+    "rl_stabilization_gain": 4.95,
+    "final_atp": 1.525,
+    "peak_dopamine_td": 20.6317
+  },
+  "track3_wavefield_swarm": {
+    "num_agents": 4,
+    "per_agent_wavefield_kb": 8.0,
+    "total_swarm_wavefield_kb": 32.0,
+    "swarm_coupled_cascade_mse": 0.077791,
+    "isolated_agents_cascade_mse": 1.091304,
+    "swarm_consensus_gain": 14.03
+  }
+}

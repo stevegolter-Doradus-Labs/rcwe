@@ -4,12 +4,14 @@ import math
 import torch
 import torch.nn.functional as F
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from rcwe.core.engine import ResonantCausalWorldEngine
 from rcwe.sandbox.baseline_tf import BaselineCausalTransformer
 from rcwe.ingestion.telemetry_loader import TelemetryIngestionLoader
 from rcwe.kernels.accelerator import select_best_device, describe_accelerator, sync_device
+from rcwe.paths import output_path
+from rcwe.predict_cli import _flag_anomalous_sensors
 
 
 class RealWorldBenchmarkSuite:
@@ -103,9 +105,9 @@ class RealWorldBenchmarkSuite:
         return paths
 
     @classmethod
-    def run_all_benchmarks(cls, out_dir: str = "benchmarks_data") -> Dict[str, Any]:
+    def run_all_benchmarks(cls, out_dir: Optional[str] = None) -> Dict[str, Any]:
         device = select_best_device()
-        csv_paths = cls.generate_benchmark_csvs(Path(out_dir))
+        csv_paths = cls.generate_benchmark_csvs(Path(out_dir or output_path("benchmarks_data")))
         results = []
 
         for domain_name, fpath in csv_paths.items():
@@ -152,9 +154,10 @@ class RealWorldBenchmarkSuite:
                     r_mses.append(float(F.mse_loss(res_r["output"], yt).item()))
                     t_mses.append(float(F.mse_loss(res_t, yt).item()))
 
-                tail_diff = (y_true[:, -5:, :n_nodes] - x_seq[:, -5:, :n_nodes]).abs().mean(dim=(0, 1))
-                top_idx = torch.topk(tail_diff, k=2).indices.tolist()
-                flagged = [data["sensor_columns"][i] for i in top_idx]
+            # Which sensors broke: asked of the toolkit's detector, which learns from the fault-free
+            # first half of the log. (The earlier "largest change over the last five rows" rule
+            # named whichever nodes happened to be moving, not the faulted ones.)
+            flagged = _flag_anomalous_sensors(fpath, limit=2)["sensors"]
 
             r_tail = sum(r_mses[-10:]) / 10.0
             t_tail = sum(t_mses[-10:]) / 10.0
@@ -173,7 +176,9 @@ class RealWorldBenchmarkSuite:
             "accelerator": describe_accelerator(device),
             "benchmarks": results,
         }
-        Path("rcwe_realworld_benchmarks_v06.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        report_path = Path(output_path("rcwe_realworld_benchmarks_v06.json"))
+        report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        report["json_path"] = str(report_path.resolve())
         return report
 
 
@@ -192,7 +197,7 @@ def main() -> None:
             f"{b['domain']:<28} | {schema:<10} | {b['rcwe_post_shift_mse']:>8.5f} | "
             f"{b['tf_post_shift_mse']:>8.5f} | {b['improvement_ratio']:>6.1f}x | {b['flagged_sensors']}"
         )
-    print("\n[Saved Multi-Domain Benchmark Telemetry -> rcwe_realworld_benchmarks_v06.json]")
+    print(f"\n[Saved Multi-Domain Benchmark Telemetry -> {rep['json_path']}]")
 
 
 if __name__ == "__main__":

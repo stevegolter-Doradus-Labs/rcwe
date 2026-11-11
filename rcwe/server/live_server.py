@@ -9,6 +9,7 @@ from rcwe.core.engine import ResonantCausalWorldEngine
 from rcwe.sandbox.baseline_tf import BaselineCausalTransformer
 from rcwe.sandbox.cpfn_env import CyberPhysicalFlowSandbox
 from rcwe.kernels.accelerator import select_best_device, describe_accelerator
+from rcwe.paths import resolve_output
 
 
 class LiveRCWEController:
@@ -95,7 +96,8 @@ class LiveRCWEController:
         after_fast = float(self.rcwe.metabolic_synapse.fast_weight.abs().sum().item())
         return {"status": "sleep_consolidated", "before_fast_norm": before_fast, "after_fast_norm": after_fast}
 
-    def save_live_checkpoint(self, path: str = "rcwe_live_server_ckpt.pt") -> Dict[str, Any]:
+    def save_live_checkpoint(self, path: Optional[str] = None) -> Dict[str, Any]:
+        path = resolve_output(path, "rcwe_live_server_ckpt.pt")
         saved = self.rcwe.save_pretrained(path, standing_field=self.standing_field)
         return {"status": "checkpoint_saved", "path": saved}
 

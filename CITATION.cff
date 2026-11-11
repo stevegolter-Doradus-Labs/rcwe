@@ -5,8 +5,8 @@ authors:
     given-names: "Steve"
     affiliation: "Doradus Labs"
 title: "Resonant Causal World Engine (RCWE): A Non-Autoregressive Symplectic, Holographic, and Metabolically Plastic World Model"
-version: 0.7.0
-date-released: 2026-11-09
+version: 1.1.0
+date-released: 2026-11-11
 license: Apache-2.0
 repository-code: "https://github.com/stevegolter-Doradus-Labs/Doradus-RCWE"
 keywords:

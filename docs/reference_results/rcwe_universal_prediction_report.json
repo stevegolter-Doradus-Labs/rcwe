@@ -1,0 +1,15 @@
+{
+  "input_file": "sample_grid_telemetry.csv",
+  "accelerator": "Apple Silicon Metal Performance Shaders (mps)",
+  "inferred_sensors": 16,
+  "inferred_actions": 8,
+  "total_steps": 39,
+  "rcwe_tail_mse": 0.00021463778102770448,
+  "tf_tail_mse": 0.10139496885240078,
+  "flagged_anomalous_sensors": [
+    "q_5",
+    "q_6",
+    "q_0"
+  ],
+  "saved_checkpoint": "rcwe_Universal_Checkpoint_v06.pt"
+}

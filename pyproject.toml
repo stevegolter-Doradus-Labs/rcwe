@@ -1,25 +1,55 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "rcwe"
-version = "0.7.0"
-description = "Resonant Causal World Engine v0.3.0: Multi-Seed Statistical CIs & Apple Silicon MPS Acceleration"
+version = "1.1.0"
+description = "Resonant Causal World Engine: find and explain anomalies in telemetry, forecast it, and explore a symplectic, holographic, plastic world model"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Steve Golter" }, { name = "Doradus Labs" }]
+keywords = [
+    "anomaly-detection", "time-series", "telemetry", "forecasting", "world-models",
+    "hamiltonian-neural-networks", "symplectic-integrators", "online-learning",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "torch>=2.1.0",
     "numpy>=1.26.0",
 ]
 
 [project.optional-dependencies]
+data = ["pandas>=2.0", "openpyxl>=3.1", "pyarrow>=14.0"]   # Excel / Parquet files and DataFrames
 gpu = ["triton>=2.1.0"]
 dev = ["pytest>=7.4.0"]
 
+[project.urls]
+Repository = "https://github.com/stevegolter-Doradus-Labs/rcwe"
+
 [project.scripts]
+rcwe = "rcwe.main:main"
 rcwe-bench = "rcwe.cli:main"
 rcwe-predict = "rcwe.predict_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["rcwe*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore:enable_nested_tensor is True:UserWarning",
+]

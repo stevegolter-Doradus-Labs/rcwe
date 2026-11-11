@@ -1,13 +1,15 @@
 import json
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from rcwe.kernels.metal_msl import benchmark_msl_131k_scaling
 from rcwe.control.self_healing import AutonomousSelfHealingAgent
 from rcwe.lm.rcwe_deep_lm import run_deep_lm_benchmark
+from rcwe.paths import resolve_output
 
 
-def run_all_phase2_tracks(output_json: str = "rcwe_phase2_v07_report.json") -> Dict[str, Any]:
+def run_all_phase2_tracks(output_json: Optional[str] = None) -> Dict[str, Any]:
+    output_json = resolve_output(output_json, "rcwe_phase2_v07_report.json")
     print("================================================================================")
     print("   DORADUS LABS — RCWE v0.7.0 PHASE 2 SUITE (METAL MSL, SELF-HEALING & DEEP-LM)")
     print("================================================================================")

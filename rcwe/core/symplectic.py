@@ -7,6 +7,8 @@ from typing import Tuple, Optional
 class SymplecticCausalBlock(nn.Module):
     def __init__(self, d_model: int, d_action: int, step_size: float = 0.05):
         super().__init__()
+        if d_action < 1:
+            raise ValueError("d_action must be >= 1 (use a single zero-filled control channel when there are no controls).")
         self.d_model = d_model
         self.d_action = d_action
         self.dt = step_size
@@ -21,6 +23,15 @@ class SymplecticCausalBlock(nn.Module):
         self.log_inv_mass = nn.Parameter(torch.zeros(d_model))
 
     def _scalar_potential(self, q_intervened: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        if action.shape[-1] != self.d_action:
+            raise ValueError(
+                f"action has {action.shape[-1]} features but this block was built with d_action={self.d_action}. "
+                "Pad or select the control columns so they match the model (see TelemetryIngestionLoader)."
+            )
+        if q_intervened.shape[-1] != self.d_model:
+            raise ValueError(
+                f"state has {q_intervened.shape[-1]} features but this block was built with d_model={self.d_model}."
+            )
         coupled = self.q_coupling(q_intervened) + self.a_coupling(action)
         quad_pot = 0.5 * (coupled ** 2).mean(dim=-1)
         nl_pot = self.potential_net(torch.cat([q_intervened, action], dim=-1)).squeeze(-1)

@@ -42,6 +42,22 @@ class ResonantCausalWorldEngine(nn.Module):
         self.metabolic_synapse.fast_weight.zero_()
         self.metabolic_synapse.atp_budget.fill_(1.0)
 
+    @torch.no_grad()
+    def sleep_consolidate(self, consolidation_rate: float = 0.05) -> float:
+        """
+        Offline sleep phase: fold the fast (online-adapted) synaptic weights into the slow
+        weights and clear them. Returns the Frobenius norm of the fast weights that were
+        consolidated, so callers can report how much runtime adaptation was absorbed.
+        """
+        consolidated_norm = float(self.metabolic_synapse.fast_weight.norm().item())
+        self.metabolic_synapse.consolidate_sleep_phase(consolidation_rate=consolidation_rate)
+        return consolidated_norm
+
+    @property
+    def mean_atp(self) -> float:
+        """Mean ATP (metabolic energy) budget across synaptic channels."""
+        return float(self.metabolic_synapse.atp_budget.mean().item())
+
     def save_pretrained(
         self,
         checkpoint_path: Union[str, Path],
@@ -80,7 +96,9 @@ class ResonantCausalWorldEngine(nn.Module):
         Restores model architecture, slow/fast weights, ATP budget, and O(1) standing wavefield.
         """
         dev = torch.device(device)
-        payload = torch.load(Path(checkpoint_path), map_location="cpu", weights_only=False)
+        # The payload only holds tensors and plain Python containers, so load it in the safe
+        # `weights_only` mode: opening a checkpoint from someone else cannot run arbitrary code.
+        payload = torch.load(Path(checkpoint_path), map_location="cpu", weights_only=True)
         cfg = payload["config"]
         model = cls(
             d_input=cfg["d_input"],

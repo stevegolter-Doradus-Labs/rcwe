@@ -1,0 +1,42 @@
+{
+  "version": "0.6.0",
+  "accelerator": "Apple Silicon Metal Performance Shaders (mps)",
+  "benchmarks": [
+    {
+      "domain": "ETT_Transformer_Thermal",
+      "sensors": 8,
+      "controls": 4,
+      "rcwe_post_shift_mse": 0.011512983520515264,
+      "tf_post_shift_mse": 0.6567050039768219,
+      "improvement_ratio": 57.040384258921534,
+      "flagged_sensors": [
+        "q_4",
+        "q_0"
+      ]
+    },
+    {
+      "domain": "SWaT_CyberPhysical_Water",
+      "sensors": 12,
+      "controls": 6,
+      "rcwe_post_shift_mse": 0.045937931165099144,
+      "tf_post_shift_mse": 0.07569336220622062,
+      "improvement_ratio": 1.6477311948198454,
+      "flagged_sensors": [
+        "q_8",
+        "q_7"
+      ]
+    },
+    {
+      "domain": "NASA_Turbofan_Bearing",
+      "sensors": 10,
+      "controls": 4,
+      "rcwe_post_shift_mse": 0.013501232408452779,
+      "tf_post_shift_mse": 0.4952715188264847,
+      "improvement_ratio": 36.68343035976536,
+      "flagged_sensors": [
+        "q_1",
+        "q_2"
+      ]
+    }
+  ]
+}
