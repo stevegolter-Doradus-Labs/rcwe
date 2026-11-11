@@ -262,7 +262,7 @@ def _make_handler(state: _State) -> type:
         def _html(self, text: str) -> None:
             self._send(200, text.encode("utf-8"), "text/html; charset=utf-8")
 
-        def _guard(self, writing: bool) -> None:
+        def _guard(self, writing: bool, path: str) -> None:
             """Only talk to pages that this server itself served (blocks cross-site and DNS-rebinding requests)."""
             host = (self.headers.get("Host") or "").strip().lower()
             bound = self.server.server_address[0]
@@ -273,6 +273,11 @@ def _make_handler(state: _State) -> type:
             origin = self.headers.get("Origin")
             if origin and urlparse(origin).netloc.lower() != host:
                 raise _BadRequest(403, "Request refused: it came from a different site.")
+            # Browsers say where a request was made from. The two pages may be opened from anywhere;
+            # the API (results, uploads, the simulation) answers only to those pages and to direct visits.
+            site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+            if path.startswith("/api/") and site not in ("", "same-origin", "none"):
+                raise _BadRequest(403, "Request refused: it came from a different site.")
             if writing and not (self.headers.get("Content-Type") or "").lower().startswith("application/json"):
                 raise _BadRequest(415, "Send JSON (Content-Type: application/json).")
 
@@ -281,6 +286,8 @@ def _make_handler(state: _State) -> type:
                 length = int(self.headers.get("Content-Length") or "")
             except ValueError:
                 raise _BadRequest(411, "Content-Length is required.")
+            if length < 0:
+                raise _BadRequest(400, "Content-Length cannot be negative.")
             if length > MAX_UPLOAD_BYTES + 1024 * 1024:
                 raise _BadRequest(413, f"Upload too large (limit {MAX_UPLOAD_BYTES // (1024 * 1024)} MB). Use `rcwe analyze` for bigger files.")
             raw = self.rfile.read(length) if length else b""
@@ -293,12 +300,14 @@ def _make_handler(state: _State) -> type:
 
         def _dispatch(self, writing: bool) -> None:
             try:
-                self._guard(writing)
                 url = urlparse(self.path)
+                self._guard(writing, url.path)
                 query = {k: v[-1] for k, v in parse_qs(url.query).items()}
                 (self._post if writing else self._get)(url.path.rstrip("/") or "/", query)
             except _BadRequest as exc:
-                self._json({"error": str(exc)}, exc.status)
+                # A refused request may leave an unread body behind: do not reuse the connection.
+                self._send(exc.status, json.dumps({"error": str(exc)}).encode("utf-8"), "application/json",
+                           {"Connection": "close"})
             except (BrokenPipeError, ConnectionResetError):
                 pass
             except Exception as exc:  # noqa: BLE001

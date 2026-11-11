@@ -93,6 +93,15 @@ def test_bad_requests_are_rejected_cleanly(studio):
     assert _call(studio, "/api/analyze", b"demo=1", {"Content-Type": "application/x-www-form-urlencoded"})[0] == 415
     assert _call(studio, "/api/analyze", {"demo": True}, {"Content-Type": "application/json", "Origin": "http://evil.example"})[0] == 403
     assert _call(studio, "/api/health", headers={"Host": "evil.example"})[0] == 403
+    # Browsers label requests another site makes (an <img> or <iframe> pointed here): the API ignores those ...
+    assert _call(studio, "/api/v10/tick", headers={"Sec-Fetch-Site": "cross-site"})[0] == 403
+    assert _call(studio, "/api/jobs", headers={"Sec-Fetch-Site": "same-site"})[0] == 403
+    # ... while its own pages, direct visits, and following a link to the start page all work.
+    assert _call(studio, "/api/health", headers={"Sec-Fetch-Site": "same-origin"})[0] == 200
+    assert _call(studio, "/api/health", headers={"Sec-Fetch-Site": "none"})[0] == 200
+    assert _call(studio, "/", headers={"Sec-Fetch-Site": "cross-site"}, raw=True)[0] == 200
+    # A refusal closes the connection, so an unread upload cannot be mistaken for the next request.
+    assert _call(studio, "/api/analyze", b"demo=1", {"Content-Type": "text/plain"})[2].get("Connection") == "close"
 
     # File content is never treated as a path on the server.
     status, body, _ = _call(studio, "/api/analyze", {"name": "x.csv", "text": "/etc/passwd"})
