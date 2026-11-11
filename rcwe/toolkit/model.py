@@ -476,8 +476,8 @@ class TelemetryModel:
 
         weak = [s for s, k in zip(self.sensors, sensor_skill) if np.isfinite(k) and k < 0.02]
         if np.isfinite(skill) and skill < 0.02:
-            warnings.append("On held-out data the model predicts the next reading no better than repeating the "
-                            "current one. Anomaly scoring still works, but expect little from forecasts.")
+            warnings.append("The model predicts the next reading no better than repeating the current one. "
+                            "Anomaly scoring still works, but expect little from forecasts.")
         elif weak and len(weak) < n:
             notes.append("No predictive skill beyond 'last value' for: " + ", ".join(weak) + ".")
 

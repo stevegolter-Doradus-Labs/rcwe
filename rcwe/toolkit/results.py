@@ -94,16 +94,20 @@ class FitSummary:
         )
 
     def summary(self) -> str:
+        held_out = self.validation_rows > 0
         lines = [
             f"Trained on {self.train_rows:,} rows ({_plural(len(self.sensors), 'sensor')}, "
             f"{_plural(len(self.controls), 'control')}) in {self.seconds:.1f}s on {self.device}; "
-            f"validated on the last {self.validation_rows:,} rows.",
+            + (f"validated on the last {self.validation_rows:,} rows." if held_out
+               else "too short to hold rows back, so the figures below are measured on the training rows themselves."),
         ]
+        # Without held-out rows the comparison flatters the model; say where it was measured.
+        where = "on held-out data" if held_out else "on its own training rows (optimistic)"
         if np.isfinite(self.skill):
             direction = "better" if self.skill >= 0 else "worse"
             lines.append(
                 f"One-step-ahead accuracy: {abs(self.skill) * 100:.0f}% {direction} than the naive "
-                f"'next value = current value' baseline on held-out data."
+                f"'next value = current value' baseline {where}."
             )
         if self.forecast_skill:
             parts = [f"{h} step{'' if h == '1' else 's'}: {v * 100:+.0f}%" for h, v in self.forecast_skill.items() if np.isfinite(v)]

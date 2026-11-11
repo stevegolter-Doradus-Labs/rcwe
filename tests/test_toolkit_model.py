@@ -236,6 +236,7 @@ def test_very_short_logs_work_and_say_so():
         })
     model = TelemetryModel(seed=0, device="cpu").fit(rows[:22])
     assert any("Very short log" in w for w in model.fit_summary_.warnings)
+    assert "its own training rows" in model.summary() and "held-out" not in model.summary()   # no pretence of validation
     result = model.detect(rows)
     assert result.metrics["incidents_detected"] == 1 and result.metrics["false_alarm_events"] == 0
     assert result.events[0].top_sensor == "voltage_kV" and result.events[0].start == 22
