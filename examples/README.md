@@ -23,9 +23,9 @@ python examples/03_live_stream.py --adapt
 
 ## Sample data
 
-`data/sample_grid_telemetry.csv` and `.json` are the small grid-telemetry logs (40 rows, one
-voltage sag) that shipped with earlier versions. They are deliberately tiny, so RCWE reports that
-the result is indicative only. For a realistic dataset, run:
+`data/sample_grid_telemetry.csv` and `.json` are the small grid-telemetry logs that shipped with
+earlier versions: 40 rows of a 16-node ring, with a fault injected on nodes 5 and 6 halfway
+through. They are deliberately tiny, so RCWE reports that the result is indicative only. For a realistic dataset, run:
 
 ```bash
 rcwe demo-data

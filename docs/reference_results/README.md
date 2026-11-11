@@ -20,6 +20,9 @@ code does on your machine, run the suites yourself; fresh reports are written to
 
 ```bash
 rcwe bench --list
+```
+
+```bash
 rcwe bench realworld
 ```
 

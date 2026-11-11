@@ -11,6 +11,7 @@ from rcwe.sandbox.baseline_tf import BaselineCausalTransformer
 from rcwe.ingestion.telemetry_loader import TelemetryIngestionLoader
 from rcwe.kernels.accelerator import select_best_device, describe_accelerator, sync_device
 from rcwe.paths import output_path
+from rcwe.predict_cli import _flag_anomalous_sensors
 
 
 class RealWorldBenchmarkSuite:
@@ -153,9 +154,10 @@ class RealWorldBenchmarkSuite:
                     r_mses.append(float(F.mse_loss(res_r["output"], yt).item()))
                     t_mses.append(float(F.mse_loss(res_t, yt).item()))
 
-                tail_diff = (y_true[:, -5:, :n_nodes] - x_seq[:, -5:, :n_nodes]).abs().mean(dim=(0, 1))
-                top_idx = torch.topk(tail_diff, k=2).indices.tolist()
-                flagged = [data["sensor_columns"][i] for i in top_idx]
+            # Which sensors broke: asked of the toolkit's detector, which learns from the fault-free
+            # first half of the log. (The earlier "largest change over the last five rows" rule
+            # named whichever nodes happened to be moving, not the faulted ones.)
+            flagged = _flag_anomalous_sensors(fpath, limit=2)["sensors"]
 
             r_tail = sum(r_mses[-10:]) / 10.0
             t_tail = sum(t_mses[-10:]) / 10.0

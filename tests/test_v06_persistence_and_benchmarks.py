@@ -52,6 +52,13 @@ def test_universal_cli_auto_schema_and_live_controller(tmp_path: Path):
 def test_real_world_multi_domain_benchmark_suite(tmp_path: Path):
     rep = RealWorldBenchmarkSuite.run_all_benchmarks(out_dir=str(tmp_path / "rw_data"))
     assert len(rep["benchmarks"]) == 3
+    # The sensors each generated log adds its fault to (see generate_benchmark_csvs).
+    injected = {
+        "ETT_Transformer_Thermal": {"q_2", "q_3"},
+        "SWaT_CyberPhysical_Water": {"q_4", "q_5"},
+        "NASA_Turbofan_Bearing": {"q_7", "q_8"},
+    }
     for b in rep["benchmarks"]:
         assert b["rcwe_post_shift_mse"] < b["tf_post_shift_mse"]
         assert b["improvement_ratio"] > 1.5
+        assert b["flagged_sensors"] and b["flagged_sensors"][0] in injected[b["domain"]]
