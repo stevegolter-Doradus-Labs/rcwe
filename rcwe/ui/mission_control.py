@@ -858,7 +858,11 @@ function drawOscilloscope() {
     ctx.beginPath(); ctx.moveTo(left, top + stripH); ctx.lineTo(W - right, top + stripH); ctx.stroke();
     line(arr, color, (v) => top + stripH - (max > min ? (v - min) / (max - min) : 0) * (stripH - 4) - 1, 1.6);
     ctx.fillStyle = "#94a3b8"; ctx.textAlign = "right"; ctx.fillText(label, left - 6, top + stripH / 2);
-    ctx.textAlign = "right"; ctx.fillStyle = "#e2e8f0"; ctx.fillText("now " + (arr.length ? num(arr[arr.length - 1]) : "–"), W - right - 2, top + 5);
+    // The latest value, on a backing plate in whichever half of the strip the line does not end in.
+    const last = arr.length ? arr[arr.length - 1] : min, text = "now " + (arr.length ? num(last) : "–");
+    const endsHigh = max > min && (last - min) / (max - min) > 0.5, ty = endsHigh ? top + stripH - 7 : top + 6, tw = ctx.measureText(text).width;
+    ctx.fillStyle = "rgba(2, 6, 23, 0.82)"; ctx.fillRect(W - right - tw - 6, ty - 7, tw + 8, 13);
+    ctx.textAlign = "right"; ctx.fillStyle = "#e2e8f0"; ctx.fillText(text, W - right - 2, ty);
   }
   strip(state.hist.ham, "#10b981", mainTop + mainH + gap, "|ΔH|");
   strip(state.hist.fast, "#f59e0b", mainTop + mainH + gap + stripH + gap - 4, "‖W_fast‖");
