@@ -141,3 +141,41 @@ def test_dataframes_excel_and_parquet_read_like_the_csv(tmp_path):
         assert np.allclose(table.values, reference.values) and np.allclose(table.control_values, reference.control_values), name
         assert table.timestamps == reference.timestamps and table.sample_interval == 300.0, name
         assert np.array_equal(table.labels, reference.labels), name
+
+
+def test_every_documented_file_format_reads_the_same_table(tmp_path):
+    import gzip
+
+    demo = make_pump_station(rows=900, faults=True, fault_start=500, seed=5).table
+    text = open(demo.to_csv(tmp_path / "demo.csv"), encoding="utf-8").read()
+    reference = load_table(tmp_path / "demo.csv")
+    rows = reference.to_rows()
+
+    def write(name, content):
+        opener = gzip.open if name.endswith(".gz") else open
+        with opener(tmp_path / name, "wt", encoding="utf-8") as handle:
+            handle.write(content)
+        return tmp_path / name
+
+    files = [
+        write("tabs.tsv", text.replace(",", "\t")),
+        write("pipes.txt", text.replace(",", "|")),
+        write("semicolons.csv", text.replace(",", ";")),
+        write("zipped.csv.gz", text),
+        write("rows.json", json.dumps(rows)),
+        write("wrapped.json", json.dumps({"telemetry": rows})),
+        write("columns.json", json.dumps({key: [row[key] for row in rows] for key in rows[0]})),
+        write("lines.jsonl", "\n".join(json.dumps(row) for row in rows)),
+        write("lines.jsonl.gz", "\n".join(json.dumps(row) for row in rows)),
+    ]
+    for path in files:
+        table = load_table(path)
+        assert (table.sensors, table.controls, table.time_column, table.label_column) == \
+               (reference.sensors, reference.controls, "timestamp", "anomaly"), path.name
+        assert np.allclose(table.values, reference.values) and table.timestamps == reference.timestamps, path.name
+        assert np.array_equal(table.labels, reference.labels), path.name
+
+    # A time column with an unfamiliar name is still found; naming it explicitly gives the same answer.
+    renamed = write("renamed.csv", text.replace("timestamp,", "logged_at,", 1))
+    assert load_table(renamed).time_column == "logged_at"
+    assert load_table(renamed, time_column="logged_at").timestamps == reference.timestamps
