@@ -9,6 +9,7 @@ from rcwe.sandbox.baseline_tf import BaselineCausalTransformer
 from rcwe.diagnostics.profiler import HardwareProfilingHarness
 from rcwe.kernels.accelerator import select_best_device, sync_device, describe_accelerator
 from rcwe.symbolic.algebra_task import run_symbolic_reasoning_benchmark
+from rcwe.paths import output_path
 
 
 def run_extreme_context_sweep(
@@ -117,7 +118,7 @@ def main_extreme_and_symbolic() -> None:
     print(f"Symbolic Sum Conservation Error : RCWE = {c_r:.5f} vs Transformer = {c_t:.5f} ({c_t / max(c_r, 1e-7):.2f}x lower)")
     print(f"Symbolic Rule-Mutation MSE      : RCWE = {m_r:.5f} vs Transformer = {m_t:.5f} ({m_t / max(m_r, 1e-7):.1f}x lower)")
 
-    out_path = Path("rcwe_extreme_and_symbolic_v04.json")
+    out_path = Path(output_path("rcwe_extreme_and_symbolic_v04.json"))
     out_path.write_text(
         json.dumps({"extreme_context_sweep": sweep_rows, "symbolic_benchmark": sym_metrics}, indent=2) + "\n",
         encoding="utf-8",

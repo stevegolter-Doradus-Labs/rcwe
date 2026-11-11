@@ -13,6 +13,7 @@ from rcwe.sandbox.baseline_tf import BaselineCausalTransformer
 from rcwe.diagnostics.nl_codec import CausalGraphNLCodec
 from rcwe.diagnostics.profiler import HardwareProfilingHarness
 from rcwe.kernels.accelerator import select_best_device, describe_accelerator, sync_device
+from rcwe.paths import resolve_output
 
 
 class ScientificValidationBenchmark:
@@ -210,9 +211,10 @@ class ScientificValidationBenchmark:
         self,
         seeds: Optional[List[int]] = None,
         epochs: int = 55,
-        output_json_path: str = "rcwe_validation_report_v03.json",
+        output_json_path: Optional[str] = None,
         seq_lengths: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
+        output_json_path = resolve_output(output_json_path, "rcwe_validation_report_v03.json")
         if seeds is None:
             seeds = [42, 101, 202]
         t0 = time.perf_counter()
@@ -292,7 +294,7 @@ class ScientificValidationBenchmark:
 
     def run_full_validation(
         self,
-        output_json_path: str = "rcwe_validation_report_v03.json",
+        output_json_path: Optional[str] = None,
         seq_lengths: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
         return self.run_multiseed_validation(

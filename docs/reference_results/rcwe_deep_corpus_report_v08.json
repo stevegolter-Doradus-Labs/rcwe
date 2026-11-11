@@ -1,0 +1,14 @@
+{
+  "corpus_total_chars": 266723,
+  "trained_tokens_per_epoch": 3072,
+  "d_model": 64,
+  "layers": 2,
+  "rcwe_deep_bpb": 1.616,
+  "tf_deep_bpb": 3.1437,
+  "rcwe_deep_accuracy": 0.7441,
+  "tf_deep_accuracy": 0.3242,
+  "total_psi_kb": 64.0,
+  "train_wall_sec": 1.28,
+  "sample_completion": "def leapfrog_step(self, q, pet in                                           ",
+  "saved_checkpoint": "deep_lm.pt"
+}

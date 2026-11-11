@@ -1,13 +1,15 @@
 import json
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from rcwe.multimodal.spectral_fusion import run_multimodal_substation_benchmark
 from rcwe.rl.symplectic_rl import run_symplectic_rl_benchmark
 from rcwe.swarm.wavefield_swarm import run_distributed_swarm_benchmark
+from rcwe.paths import resolve_output
 
 
-def run_all_v09_tracks(output_json: str = "rcwe_v09_multimodal_rl_swarm_report.json") -> Dict[str, Any]:
+def run_all_v09_tracks(output_json: Optional[str] = None) -> Dict[str, Any]:
+    output_json = resolve_output(output_json, "rcwe_v09_multimodal_rl_swarm_report.json")
     print("================================================================================")
     print("   DORADUS LABS — RCWE v0.9.0 MULTIMODAL, SYMPLECTIC RL & SWARM SUITE")
     print("================================================================================")

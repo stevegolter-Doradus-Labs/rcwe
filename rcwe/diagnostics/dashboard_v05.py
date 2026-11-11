@@ -3,26 +3,29 @@ import time
 import torch
 import torch.nn.functional as F
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from rcwe.core.engine import ResonantCausalWorldEngine
 from rcwe.sandbox.baseline_tf import BaselineCausalTransformer
 from rcwe.kernels.accelerator import select_best_device, describe_accelerator, sync_device
 from rcwe.ingestion.telemetry_loader import TelemetryIngestionLoader
 from rcwe.symbolic.code_reasoning import run_code_reasoning_benchmark
+from rcwe.paths import output_path, reference_path, resolve_output
 
 
 def run_v05_pipeline_and_build_dashboard(
-    dashboard_path: str = "rcwe_live_dashboard_v05.html",
-    json_report_path: str = "rcwe_telemetry_and_code_v05.json",
+    dashboard_path: Optional[str] = None,
+    json_report_path: Optional[str] = None,
 ) -> Dict[str, Any]:
+    dashboard_path = resolve_output(dashboard_path, "rcwe_live_dashboard_v05.html")
+    json_report_path = resolve_output(json_report_path, "rcwe_telemetry_and_code_v05.json")
     device = select_best_device()
     loader = TelemetryIngestionLoader(num_nodes=16, d_action=8, dt=0.05)
 
     # 1. Generate & ingest real-world format CSV and JSON physical telemetry files
     csv_file, json_file = loader.generate_sample_grid_telemetry(
-        csv_path="sample_grid_telemetry.csv",
-        json_path="sample_grid_telemetry.json",
+        csv_path=output_path("sample_grid_telemetry.csv"),
+        json_path=output_path("sample_grid_telemetry.json"),
         num_steps=40,
     )
     batch_csv = loader.load_csv(csv_file, device=device)
@@ -87,8 +90,9 @@ def run_v05_pipeline_and_build_dashboard(
 
     # Pull prior v0.4 extreme scaling report if available for unified dashboard display
     ext_rows = []
-    if Path("rcwe_extreme_and_symbolic_v04.json").exists():
-        ext_data = json.loads(Path("rcwe_extreme_and_symbolic_v04.json").read_text(encoding="utf-8"))
+    ext_report = reference_path("rcwe_extreme_and_symbolic_v04.json")
+    if ext_report is not None:
+        ext_data = json.loads(ext_report.read_text(encoding="utf-8"))
         ext_rows = ext_data.get("extreme_context_sweep", [])
 
     summary = {

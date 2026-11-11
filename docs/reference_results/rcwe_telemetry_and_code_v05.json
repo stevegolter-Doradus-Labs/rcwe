@@ -1,8 +1,8 @@
 {
   "version": "0.5.0",
   "accelerator": "Apple Silicon Metal Performance Shaders (mps)",
-  "ingested_csv_path": "/Users/stevegolter/Downloads/rcwe/sample_grid_telemetry.csv",
-  "ingested_json_path": "/Users/stevegolter/Downloads/rcwe/sample_grid_telemetry.json",
+  "ingested_csv_path": "sample_grid_telemetry.csv",
+  "ingested_json_path": "sample_grid_telemetry.json",
   "total_ingested_steps": 39,
   "post_anomaly_rcwe_mse": 0.000339,
   "post_anomaly_tf_mse": 0.0989855,

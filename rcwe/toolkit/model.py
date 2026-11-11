@@ -106,15 +106,16 @@ def _severity(ratio: float) -> str:
 class StepResult:
     """Outcome of feeding one new row to a `StreamMonitor`."""
 
-    __slots__ = ("index", "time", "score", "is_anomaly", "sensors", "expected", "values", "sensor_scores")
+    __slots__ = ("index", "time", "score", "is_anomaly", "alert", "sensors", "expected", "values", "sensor_scores")
 
     def __init__(self, index: int, time: str, score: float, is_anomaly: bool, sensors: List[Dict[str, Any]],
-                 expected: Dict[str, float], values: Dict[str, float], sensor_scores: Dict[str, float]):
+                 expected: Dict[str, float], values: Dict[str, float], sensor_scores: Dict[str, float], alert: bool = False):
         self.index = index
         self.time = time
         self.score = score
-        self.is_anomaly = is_anomaly
-        self.sensors = sensors            # sensors above threshold, worst first: {name, score, reason, direction}
+        self.is_anomaly = is_anomaly      # this reading is above the threshold
+        self.alert = alert                # ...and it is not a one-off blip (two in a row, or clearly above)
+        self.sensors = sensors            # sensors above threshold, worst first: {name, score, reason, direction, detail}
         self.expected = expected
         self.values = values
         self.sensor_scores = sensor_scores
@@ -122,7 +123,7 @@ class StepResult:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "index": self.index, "time": self.time, "score": round(self.score, 4), "is_anomaly": self.is_anomaly,
-            "sensors": self.sensors, "expected": self.expected, "values": self.values,
+            "alert": self.alert, "sensors": self.sensors, "expected": self.expected, "values": self.values,
             "sensor_scores": {k: round(v, 4) for k, v in self.sensor_scores.items()},
         }
 
@@ -184,6 +185,7 @@ class TelemetryModel:
         self.engine: Optional[ResonantCausalWorldEngine] = None
         self.sensors: List[str] = []
         self.controls: List[str] = []
+        self.time_column: Optional[str] = None
         self.fit_summary_: Optional[FitSummary] = None
         self._device = torch.device("cpu")
         self._mean = self._std = self._vs = self._vmean = self._cmean = self._cstd = self._gain = None
@@ -343,6 +345,7 @@ class TelemetryModel:
                          f"({int(table.labels.sum())} labelled anomalous rows are part of the training log).")
 
         self.sensors, self.controls = list(table.sensors), list(table.controls)
+        self.time_column = table.time_column
         values, ctrl = table.values, table.control_values
 
         # ---- scalers (from the training part only) ------------------------------------
@@ -944,7 +947,7 @@ class TelemetryModel:
                 "num_worldlines": self.engine.num_worldlines, "num_freq_bands": self.engine.num_freq_bands,
             },
             "engine_state": {k: v.detach().cpu() for k, v in self.engine.state_dict().items()},
-            "sensors": list(self.sensors), "controls": list(self.controls),
+            "sensors": list(self.sensors), "controls": list(self.controls), "time_column": self.time_column,
             "scaler": {"mean": tensor(self._mean), "std": tensor(self._std), "vs": tensor(self._vs),
                        "vmean": tensor(self._vmean),
                        "cmean": tensor(self._cmean), "cstd": tensor(self._cstd), "gain": tensor(self._gain),
@@ -991,6 +994,7 @@ class TelemetryModel:
         engine.load_state_dict(payload["engine_state"])
         model.engine = engine.to(model._device).eval()
         model.sensors, model.controls = list(payload["sensors"]), list(payload["controls"])
+        model.time_column = payload.get("time_column")
 
         def array(value: Optional[torch.Tensor]) -> Optional[np.ndarray]:
             return None if value is None else value.double().numpy()
@@ -1049,6 +1053,7 @@ class StreamMonitor:
         self._prev_a: Optional[torch.Tensor] = None
         self._p_hat: Optional[np.ndarray] = None
         self._score_state: Optional[Dict[str, np.ndarray]] = None
+        self._streak = 0
 
     @torch.no_grad()
     def _advance(self, qn: np.ndarray, p: np.ndarray, un: np.ndarray) -> np.ndarray:
@@ -1080,17 +1085,22 @@ class StreamMonitor:
         model = self.model
         n = len(model.sensors)
         if isinstance(row, dict):
+            def number(value: Any) -> float:
+                return math.nan if value is None or value == "" else float(value)
+
             try:
-                values = np.array([float(row[name]) for name in model.sensors], dtype=float)
+                values = np.array([number(row[name]) for name in model.sensors], dtype=float)
             except KeyError as exc:
                 raise DataError(f"Reading is missing sensor {exc}.") from exc
             except (TypeError, ValueError) as exc:
                 raise DataError(f"Reading contains a non-numeric value: {exc}.") from exc
-            ctrl = np.array([float(row.get(name, math.nan)) if row.get(name) not in (None, "") else math.nan
-                             for name in model.controls], dtype=float)
+            try:
+                ctrl = np.array([number(row.get(name)) for name in model.controls], dtype=float)
+            except (TypeError, ValueError) as exc:
+                raise DataError(f"Reading contains a non-numeric control value: {exc}.") from exc
             if timestamp is None:
-                for key in ("timestamp", "time", "datetime", "date", "ts"):
-                    if key in row:
+                for key in ([model.time_column] if model.time_column else []) + ["timestamp", "time", "datetime", "date", "ts"]:
+                    if row.get(key) not in (None, ""):
                         timestamp = str(row[key])
                         break
         else:
@@ -1125,10 +1135,21 @@ class StreamMonitor:
                 break
             reason = REASONS[int(scored.reason[0, i])]
             signed = scored.z[0, i] if reason == "surprise" else scored.drift_z[0, i]
+            direction = "above" if signed >= 0 else "below"
+            if reason == "flatline":
+                detail = f"reading stuck at {_fmt(values[i])}"
+            elif reason == "range":
+                direction = "above" if values[i] >= model._mean[i] else "below"
+                detail = f"{direction} the range seen in training ({_fmt(values[i])})"
+            else:
+                detail = f"{REASON_TEXT[reason]} {direction} expected ({_fmt(values[i])} vs {_fmt(expected[i])})"
             flagged.append({"name": model.sensors[i], "score": round(float(sensor_score[i]), 3),
-                            "reason": REASON_TEXT[reason], "direction": "above" if signed >= 0 else "below"})
+                            "reason": REASON_TEXT[reason], "direction": direction, "detail": detail})
+        is_anomaly = score > self.threshold
+        self._streak = self._streak + 1 if is_anomaly else 0
         result = StepResult(
-            index=self.index, time=timestamp or f"step {self.index}", score=score, is_anomaly=score > self.threshold,
+            index=self.index, time=timestamp or f"step {self.index}", score=score, is_anomaly=is_anomaly,
+            alert=is_anomaly and (self._streak >= 2 or score >= 1.25 * self.threshold),
             sensors=flagged,
             expected={s: float(v) for s, v in zip(model.sensors, expected)},
             values={s: float(v) for s, v in zip(model.sensors, values)},

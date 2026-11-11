@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from rcwe.predict_cli import run_universal_prediction
+from rcwe.paths import output_path
 
 
 class CustomDatasetConnector:
@@ -25,7 +26,9 @@ class CustomDatasetConnector:
             "Run `make custom-data` or `rcwe-predict --input datasets/custom/<your_file.csv>` to:\n"
             "1. Auto-detect all numeric sensor/feature columns and control columns.\n"
             "2. Reconstruct canonical momentum `p_t = (q_t - q_{t-1}) / dt` automatically.\n"
-            "3. Run online 3-factor metabolic adaptation on Apple Silicon MPS and flag anomalous sensors.\n",
+            "3. Run online 3-factor metabolic adaptation and flag anomalous sensors.\n\n"
+            "For the full workflow (explained events, HTML report, forecasts) use:\n"
+            "`rcwe analyze datasets/custom/<your_file.csv>`\n",
             encoding="utf-8",
         )
         sample_custom = custom_dir / "custom_scada_substation_log.csv"
@@ -60,8 +63,8 @@ class CustomDatasetConnector:
 
         rep = run_universal_prediction(
             input_path=str(target_file),
-            save_checkpoint="rcwe_Custom_Dataset_Checkpoint_v08.pt",
-            output_json="rcwe_custom_dataset_report_v08.json",
+            save_checkpoint=output_path("rcwe_Custom_Dataset_Checkpoint_v08.pt"),
+            output_json=output_path("rcwe_custom_dataset_report_v08.json"),
             warmup_steps=16,
             epochs=35,
         )

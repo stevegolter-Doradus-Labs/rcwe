@@ -8,6 +8,7 @@ from typing import Dict, Any, List, Optional
 
 from rcwe.lm.rcwe_deep_lm import RCWEDeepLanguageWorldModel, BaselineTransformerLM
 from rcwe.kernels.accelerator import select_best_device, sync_device, describe_accelerator
+from rcwe.paths import output_path, resolve_output
 
 
 class LargeCorpusRCWETrainer:
@@ -25,10 +26,12 @@ class LargeCorpusRCWETrainer:
         self.seq_len = seq_len
         self.vocab_size = 128
 
-    def build_repository_corpus(self, root_dir: Path = Path(".")) -> str:
+    _SKIP_DIRS = {".venv", "venv", "env", "__pycache__", ".git", "node_modules", "site-packages", "build", "dist", "rcwe_output"}
+
+    def _harvest(self, root_dir: Path) -> List[str]:
         chunks: List[str] = []
         for p in sorted(root_dir.rglob("*.py")):
-            if ".venv" not in p.parts and "__pycache__" not in p.parts:
+            if not self._SKIP_DIRS.intersection(p.parts):
                 try:
                     chunks.append(p.read_text(encoding="utf-8"))
                 except Exception:
@@ -38,6 +41,14 @@ class LargeCorpusRCWETrainer:
                 chunks.append(p.read_text(encoding="utf-8"))
             except Exception:
                 pass
+        return chunks
+
+    def build_repository_corpus(self, root_dir: Path = Path(".")) -> str:
+        chunks = self._harvest(root_dir)
+        if sum(len(c) for c in chunks) < 4096:
+            # Run from a directory without source code (e.g. after `pip install`): fall back to the
+            # installed rcwe package itself so there is always a real code corpus to train on.
+            chunks += self._harvest(Path(__file__).resolve().parent.parent)
         full_text = "\n\n".join(chunks)
         if len(full_text) < 4096:
             full_text = (full_text + "\n") * 8
@@ -83,8 +94,9 @@ class LargeCorpusRCWETrainer:
         self,
         epochs: int = 30,
         batch_size: int = 8,
-        save_ckpt: str = "rcwe_deep_corpus_v08.pt",
+        save_ckpt: Optional[str] = None,
     ) -> Dict[str, Any]:
+        save_ckpt = resolve_output(save_ckpt, "rcwe_deep_corpus_v08.pt")
         torch.manual_seed(42)
         corpus_text = self.build_repository_corpus(Path("."))
         batches = self.make_batches(corpus_text, batch_size=batch_size)
@@ -164,7 +176,7 @@ class LargeCorpusRCWETrainer:
             "sample_completion": sample_completion,
             "saved_checkpoint": str(Path(save_ckpt).resolve()),
         }
-        Path("rcwe_deep_corpus_report_v08.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        Path(output_path("rcwe_deep_corpus_report_v08.json")).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         return report
 
 

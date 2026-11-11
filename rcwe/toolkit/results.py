@@ -106,7 +106,7 @@ class FitSummary:
                 f"'next value = current value' baseline on held-out data."
             )
         if self.forecast_skill:
-            parts = [f"{h} steps: {v * 100:+.0f}%" for h, v in self.forecast_skill.items() if np.isfinite(v)]
+            parts = [f"{h} step{'' if h == '1' else 's'}: {v * 100:+.0f}%" for h, v in self.forecast_skill.items() if np.isfinite(v)]
             if parts:
                 lines.append("Forecast skill vs naive baseline -- " + ", ".join(parts) + ".")
         for warning in self.warnings:

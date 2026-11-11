@@ -22,12 +22,12 @@ def test_demo_files_round_trip_with_schema_inference(tmp_path):
 
 
 def test_legacy_rcwe_logs_ignore_explicit_momentum_columns():
-    table = load_table("sample_grid_telemetry.csv")
+    table = load_table("examples/data/sample_grid_telemetry.csv")
     assert table.n_sensors == 16 and all(name.startswith("q_") for name in table.sensors)
     assert len(table.controls) == 8
     assert table.time_column == "timestamp_step" and table.label_column == "regime_label"
     assert any("momentum" in note for note in table.notes)
-    as_json = load_table("sample_grid_telemetry.json")
+    as_json = load_table("examples/data/sample_grid_telemetry.json")
     assert np.allclose(table.values, as_json.values)
 
 

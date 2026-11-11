@@ -16,6 +16,7 @@ from rcwe.multimodal.spectral_fusion import Spectral2DMultimodalCodec, run_multi
 from rcwe.rl.symplectic_rl import SymplecticPontryaginAgent, run_symplectic_rl_benchmark
 from rcwe.swarm.wavefield_swarm import DistributedWavefieldSwarm, run_distributed_swarm_benchmark
 from rcwe.kernels.accelerator import select_best_device, describe_accelerator
+from rcwe.paths import resolve_output
 
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -1018,15 +1019,15 @@ class MissionControlEngine:
         }
 
     @staticmethod
-    def export_standalone_html(out_path: str = "rcwe_mission_control_v10.html") -> str:
-        p = Path(out_path)
+    def export_standalone_html(out_path: Optional[str] = None) -> str:
+        p = Path(resolve_output(out_path, "rcwe_mission_control_v10.html"))
         p.write_text(HTML_TEMPLATE, encoding="utf-8")
         return str(p.resolve())
 
 
 def serve_mission_control(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> None:
     engine = MissionControlEngine()
-    html_file = engine.export_standalone_html("rcwe_mission_control_v10.html")
+    html_file = engine.export_standalone_html()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: Any) -> None:
@@ -1082,7 +1083,7 @@ if __name__ == "__main__":
     parser.add_argument("--export-only", action="store_true", help="Export standalone HTML without blocking")
     args = parser.parse_args()
     if args.export_only:
-        out = MissionControlEngine.export_standalone_html("rcwe_mission_control_v10.html")
+        out = MissionControlEngine.export_standalone_html()
         print(f"Exported standalone Mission Control UI -> {out}")
     else:
         serve_mission_control(host=args.host, port=args.port)
