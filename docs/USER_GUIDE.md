@@ -77,9 +77,9 @@ One row per time step, one column per signal. That is the only requirement.
 
 | Accepted | Notes |
 |---|---|
-| `.csv`, `.tsv`, `.txt` | Comma, semicolon, tab or pipe separated; the delimiter is detected. |
+| `.csv`, `.tsv`, `.txt` | Comma, semicolon, tab or pipe separated; the delimiter is detected. A header row is expected but not required. Lines starting with `#` are skipped. |
 | `.json` | A list of row objects, `{"telemetry": [...]}`, or an object of column lists. |
-| `.jsonl`, `.ndjson` | One JSON object per line. |
+| `.jsonl`, `.ndjson` | One JSON object per line (also recognised by content, whatever the file is called). |
 | `.gz` versions of the above | Read directly. |
 | `.xlsx`, `.parquet` | Needs the `data` extra. |
 | In Python | Lists of dicts, dicts of columns, NumPy arrays, pandas DataFrames. |
@@ -90,7 +90,7 @@ How columns are interpreted:
 |---|---|---|
 | Numeric measurement | **Sensor** | Any numeric column not claimed below. |
 | Operator input, setpoint, actuator command | **Control** | Names starting `act_`, `u_`, `ctrl_`, `control_`, `cmd_`, `setpoint_`, `sp_` or ending `_setpoint`, `_cmd`, `_sp`, `_command`. |
-| Timestamp | **Time axis** | Names like `timestamp`, `time`, `date`, `datetime`, `ts`; or any column of parseable dates; epoch seconds/milliseconds; or a step counter. |
+| Timestamp | **Time axis** | Names like `timestamp`, `time`, `date`, `datetime`, `ts`; longer names that contain such a word (`timestamp_ms`, `Time [s]`) when the values are clock times; any column of parseable dates; a step counter. |
 | Ground truth | **Labels** (never used for training) | Names like `anomaly`, `label`, `fault`, `attack`, `regime_label`. Used only to score the result. |
 | Text | Ignored | Listed in the notes. |
 
@@ -101,12 +101,13 @@ rcwe inspect your_log.csv
 ```
 
 ```text
-your_log.csv
+demo/pump_station_incident.csv
   rows        1,200
   time        timestamp   2026-03-12T10:00:00Z to 2026-03-16T13:55:00Z   every 300s
   sensors     6
     name                     min         mean          max  missing
     flow_m3h               32.86       58.266        91.94        0
+    pressure_bar           6.132       7.0503        7.609        0
     ...
   controls    act_valve_open, act_pump_speed
   labels      anomaly (237 rows marked anomalous)
@@ -118,20 +119,98 @@ If the guess is wrong, say so explicitly. Every command that reads a training fi
 rcwe fit plant.csv --sensors "flow,pressure,temp" --controls "valve_position" --time-column logged_at
 ```
 
-What RCWE does for you, and reports in the notes:
+A model remembers these choices: later `detect`, `forecast` and `watch` calls read the same
+columns the same way, without the options being repeated.
 
-- Missing values and non-numeric cells are interpolated.
-- Decimal commas and thousands separators (`1.013,2`) are understood.
-- Rows out of chronological order are sorted.
-- Explicit momentum columns from older RCWE logs (`p_0`, `p_1`, ...) are ignored; rates of change
-  are derived from the sensors.
+### What RCWE works out for you
+
+Each of these decisions is reported in the notes that `inspect`, `fit` and the report print.
+
+**Time**
+
+- Dates are read with **one format for the whole column**. `11/03/2026` cannot be told from its
+  day/month twin on its own, so the reading that parses every cell, keeps the rows in order and
+  gives the most even spacing is chosen, and the choice is stated ("dates read as
+  day/month/year"). If both readings fit equally well, the note says so; ISO dates
+  (`2026-03-11`) remove the doubt.
+- Unix time is recognised in seconds, milliseconds, microseconds and nanoseconds, as are
+  compact stamps such as `20260311105800`, and a date column next to a time-of-day column.
+- Rows out of chronological order are sorted. The hour that local clocks repeat when daylight
+  saving ends is kept in file order instead of being shuffled together.
+- A timestamp that cannot be read is interpolated from its neighbours.
+
+**Numbers**
+
+- Decimal commas are understood, and told apart from thousands separators by looking at the
+  whole column: in `994, 998, "1,002", "1,006"` the comma is a thousands separator; next to
+  `0,998` it is a decimal mark. When a column leaves real doubt, the note says how it was read.
+- Percent signs, non-breaking spaces and the usual missing-value markers (`NA`, `null`, `-`, ...)
+  are handled.
+
+**Sensors**
+
+- **Gaps.** For training, missing values are interpolated. When a log is scanned, a missing
+  reading is not scored and the last real value is held in its place; the first reading after a
+  gap is judged against how far that sensor can move in that many steps. An interpolated value
+  would already know what comes after the gap.
 - **Running totals and random-walk signals** (energy counters, odometers) are recognised: only
-  their rate of change is modelled, and they are not flagged merely for growing.
-- **Constant columns** are kept: if one changes later, that is flagged.
+  their rate of change is modelled, and they are not flagged merely for growing. A counter that
+  moves by exactly the same amount every row is flagged the moment it skips.
+- **Constant columns** are kept: if one changes later, that is flagged, whatever its units.
+- **Status and mode flags** (a handful of distinct values) switch without warning; a switch that
+  the training log shows at least three times is treated as normal.
+- **Wild readings in the training log** (a `1e9` glitch) are set aside when each sensor's scale
+  is learned, so one of them cannot blind a sensor.
+- Explicit momentum columns from older RCWE logs (`p_0`, `p_1`, ... next to `timestamp_step`)
+  are ignored; rates of change are derived from the sensors.
 
-**How much data?** A few hundred rows of normal operation is a reasonable minimum; a few thousand
-is comfortable. Below 80 rows RCWE still runs, calibrates on the training rows themselves, and
-warns that results are indicative. Fewer than 12 rows is refused.
+**Labels.** Numeric labels count as anomalous when non-zero (`-1`/`1` is read as outlier/inlier).
+Text labels use the usual words (`normal`, `ok`, `good`, ...); where none is recognised, the most
+frequent value is taken as normal and the note says which. Extra label-like columns are left out
+rather than fed to the model.
+
+### Controls: reacting or commanding?
+
+A control column can be one of two things, and only you know which.
+
+- A **command** is set independently of the sensors: a setpoint, a schedule, an operator's
+  input. The readings respond to it.
+- A **controller output** reacts to the sensors, often within the same sample.
+
+By default RCWE assumes the cautious case. It gives the model a control's value only up to the
+row it predicts *from*, never for the row being predicted, because a controller output would give
+the answer away: the model would learn "the valve command jumps when the pressure drops" and
+explain a leak as expected. The price is that the model cannot anticipate what a control change
+does, so forecasts ignore a planned change, and a large setpoint step can itself raise an event.
+
+Tell RCWE which controls are commands and it uses them in full:
+
+```bash
+rcwe fit normal_week.csv --commands "valve_setpoint,pump_speed" -o plant.rcwe
+```
+
+`--commands all` declares every control; `--commands none` declares none. Controls whose names
+say so (`setpoint_*`, `sp_*`, `*_setpoint`, `*_sp`) are commands without being listed.
+
+What changes, measured on the demo plant with an operator stepping the valve and pump speed by
+hand ([BENCHMARKS.md, section 2](BENCHMARKS.md)): a planned +0.10 valve step moved the 24-step
+flow forecast by 0% of the plant's true response by default and by 87% with the controls declared
+as commands, and one-step skill rose from about 25% to 33%. The model learns a response only
+from changes of that kind in the training log.
+
+Either way, an event that begins as a control changes markedly says so, which is usually enough
+to tell an operator's action from a fault:
+
+```text
+motor_power_kw jumped above expectations (29.29 vs 26.33 expected), peaking at 5.8 sigma;
+coincides with a change in act_pump_speed (0.6 to 0.65).
+```
+
+### How much data?
+
+A few hundred rows of normal operation is a reasonable minimum; a few thousand is comfortable.
+Below 80 rows RCWE still runs, calibrates on the training rows themselves, and warns that results
+are indicative. Fewer than 12 rows is refused. Files with more than 10,000 columns are refused.
 
 ---
 
@@ -164,6 +243,7 @@ Useful options:
 | `--train FILE` | Learn from a separate known-good log instead (recommended when you have one). |
 | `--train-fraction 0.5`, `--train-rows 2000` | How much of the single file to learn from. |
 | `--sensitivity low\|medium\|high\|<sigmas>` | Alarm threshold: 6.0, 4.5 (default), 3.5, or your own number. |
+| `--commands A,B\|all\|none` | Which controls are commands (see [section 3](#controls-reacting-or-commanding)). |
 | `--adapt` | Adaptive mode (see [section 7](#7-choosing-settings)). |
 | `--forecast 48` | Also forecast 48 steps past the end. |
 | `--no-range-check` | Do not flag readings merely for being outside the training range. |
@@ -189,11 +269,14 @@ rcwe forecast today.csv -m plant.rcwe --steps 48 --csv forecast.csv
 ```
 
 Without a file, it forecasts from the end of the training log. If you know the planned control
-values for the forecast window, pass them:
+values for the forecast window, pass them; a file holding just the control columns is enough:
 
 ```bash
 rcwe forecast today.csv -m plant.rcwe --steps 48 --planned-controls schedule.csv
 ```
+
+A plan moves the forecast through the controls that were declared as commands when the model
+was trained; the forecast's notes say which controls it could not take into account.
 
 ### `rcwe watch` — follow a growing file
 
@@ -242,7 +325,8 @@ print(model.summary())
 
 `fit` accepts a path, a list of row dicts, a dict of columns, a NumPy array `[rows, sensors]`, a
 pandas DataFrame, or a `TelemetryTable`. Override column detection with `sensors=[...]`,
-`controls=[...]`, `time_column="..."`.
+`controls=[...]`, `time_column="..."`, `label_column="..."`, and declare commands with
+`commands=[...]` (or `True` / `"all"`, `False` / `"none"`).
 
 Constructor options (all optional):
 
@@ -256,7 +340,8 @@ Constructor options (all optional):
 | `device` | `"auto"` | `"cpu"`, `"cuda"`, `"mps"` or automatic. |
 
 After training, `model.fit_summary_` holds the model card: rows used, skill against the naive
-baseline overall and per sensor, forecast skill by horizon, warnings and notes.
+baseline overall and per sensor, forecast skill by horizon, which controls are commands,
+warnings and notes.
 
 ### Detect
 
@@ -268,17 +353,21 @@ for event in result.events:
     print(event.start_time, event.end_time, event.severity, event.kind, event.top_sensor)
     for sensor in event.sensors:
         print("   ", sensor["name"], sensor["direction"], sensor["actual"], "vs", sensor["expected"])
+    for change in event.control_changes:
+        print("    control", change["name"], "went from", change["before"], "to", change["after"])
 ```
+
+The data is read with the columns chosen for `fit`, wherever it has them.
 
 `result` fields you will use most:
 
 | Field | Shape | Meaning |
 |---|---|---|
-| `events` | list | `AnomalyEvent` objects: `start`, `end`, `start_time`, `end_time`, `duration`, `peak_score`, `severity`, `kind`, `sensors`, `description`. |
+| `events` | list | `AnomalyEvent` objects: `start`, `end`, `start_time`, `end_time`, `duration`, `peak_score`, `severity`, `kind`, `sensors`, `control_changes`, `description`. |
 | `scores` | `[rows]` | Overall anomaly score per step (the worst sensor). |
 | `sensor_scores` | `[rows, sensors]` | Score per sensor. |
 | `expected` | `[rows, sensors]` | What the model expected, in the sensor's own units. |
-| `values` | `[rows, sensors]` | What actually arrived. |
+| `values` | `[rows, sensors]` | The readings that were scored (a gap shows the value held across it). |
 | `is_anomaly` | `[rows]` | True inside an event. |
 | `metrics` | dict or `None` | Present when the file has labels: incidents caught, false alarms, delay, precision, recall, AUROC. |
 
@@ -302,7 +391,7 @@ print(forecast.summary())
 forecast.values        # [steps, sensors]
 forecast.lower, forecast.upper          # 80% interval
 forecast.lower95, forecast.upper95      # 95% interval
-forecast.timestamps    # real timestamps when the log has a time axis
+forecast.timestamps    # continues the log's own time axis
 forecast.model_weight  # per sensor: 1 = pure model, 0 = fell back to "holds its latest value"
 forecast.to_csv("forecast.csv")
 ```
@@ -310,7 +399,7 @@ forecast.to_csv("forecast.csv")
 Where the backtest made during `fit` shows the model cannot beat "the sensor holds its latest
 value (plus its usual trend)", the forecast for that sensor is exactly that, and `model_weight`
 says so. Controls are assumed to stay at their latest values unless you pass `future_controls`
-(an array `[steps, controls]`, or a file or table with the control columns).
+(an array `[steps, controls]`, or a file, table or list of rows with the control columns).
 
 To show a forecast in the report, attach it first: `result.forecast = forecast`.
 
@@ -322,7 +411,8 @@ model = TelemetryModel.load("plant.rcwe")
 ```
 
 One file holds the weights, scalers and calibration. It is read with PyTorch's `weights_only`
-loader, so opening a model file from someone else cannot run code.
+loader, so opening a model file from someone else cannot run code, and it carries a checksum, so
+a damaged file is refused instead of quietly giving different scores.
 
 ### Reading files yourself
 
@@ -330,6 +420,7 @@ loader, so opening a model file from someone else cannot run code.
 table = load_table("your_log.csv")
 table.sensors, table.controls, table.time_column
 table.values            # [rows, sensors], gaps filled
+table.missing           # [rows, sensors], True where a value was absent
 table.notes             # what was decided on the way in
 train, rest = table.split(0.6)
 ```
@@ -341,22 +432,28 @@ train, rest = table.split(0.6)
 ### The summary
 
 ```text
-#2 [CRITICAL] 2026-03-13T20:00:00Z to 2026-03-13T23:55:00Z (48 steps): pressure_bar ran below
-   expectations (6.5 vs 7.41 expected at the peak), peaking at 23.6 sigma; also involved: vibration_mm_s.
+#2 [CRITICAL] 2026-03-13T20:00:00Z to 2026-03-13T23:50:00Z (47 steps): pressure_bar ran below
+   expectations (6.5 vs 7.42 expected at the peak), peaking at 24.2 sigma; also involved: vibration_mm_s.
 ```
 
 - **Severity** compares the peak score with the threshold: low (under 1.5x), medium (under 2.5x),
   high (under 5x), critical.
 - **The first sensor named** is the one with the sharpest evidence, which is usually where the
-  problem is. Sensors listed as *also involved* disagree with it; they are often knock-on effects.
+  problem is. Sensors listed as *also involved* deviated strongly as well; they are often
+  knock-on effects.
+- **"coincides with a change in ..."** is added when a control input changed by much more than
+  it usually does as the event began or within the three rows before it.
 - **Kind** is one of:
 
 | Kind | Meaning |
 |---|---|
 | spike | A jump lasting a few samples. |
 | sustained deviation | The sensor stayed away from where the model expected it. |
-| out of range | The reading left the envelope seen in training by more than a quarter of its width. The model is extrapolating there. |
+| out of range | The reading left the envelope seen in training by more than a quarter of its width. The model is extrapolating there. The value given is the most extreme one reached. |
 | flatline | The reading stopped changing for much longer than it ever did in training. |
+
+The closing line `Most time above threshold: ...` lists where deviations lasted longest over the
+whole log. It can differ from the sensors the events name first, which are where they started.
 
 ### The report
 
@@ -369,6 +466,9 @@ train, rest = table.split(0.6)
 - **How much to trust this**: skill per sensor against the naive baseline. A sensor at 0% is not
   being predicted any better than "it stays where it is"; its anomalies are still caught, but its
   forecast is just its last value.
+
+The report is one file with no outside dependencies. It shows the analysed file's name, not the
+folder it was in.
 
 ### When the file has labels
 
@@ -407,7 +507,13 @@ the model never sees an answer before being graded on it.
 
 The single biggest lever on quality. If the training rows contain an incident, the model partly
 learns it as normal; you will still see where it starts and stops, but not its full extent.
-Prefer `--train known_good.csv` whenever you have such a file.
+Prefer `--train known_good.csv` whenever you have such a file. Isolated glitches are a different
+matter: a few wild readings in the training log do not distort what the model learns.
+
+### Declare your commands
+
+If your control columns are setpoints or schedules, say so with `--commands`
+([section 3](#controls-reacting-or-commanding)). It is what lets forecasts respond to a plan.
 
 ---
 
@@ -422,8 +528,8 @@ rcwe watch live.csv -m plant.rcwe --jsonl alerts.jsonl
 ```text
 Watching live.csv with plant.rcwe (threshold 4.5 sigma, reference mode). Press Ctrl+C to stop.
   primed on 3,000 existing row(s); waiting for new ones ...
-  ANOMALY   2026-03-13T20:00:00Z  score 23.6  pressure_bar: sudden jump below expected (6.5 vs 7.41)
-  cleared   2026-03-13T23:55:00Z  (lasted 48 row(s), peak 23.6 sigma)
+  ANOMALY   2026-03-13T20:00:00Z  score 24.2  pressure_bar: sudden jump below expected (6.5 vs 7.42)
+  cleared   2026-03-13T23:50:00Z  (lasted 46 row(s), peak 24.2 sigma)
 ```
 
 | Option | Effect |
@@ -437,12 +543,14 @@ Watching live.csv with plant.rcwe (threshold 4.5 sigma, reference mode). Press C
 | `--fail-on-anomaly` | Exit status 2 if any alert was raised. |
 
 A single reading just over the threshold is not announced; an alert needs two in a row or one
-clearly above (1.25x the threshold). An alert is cleared after four quiet rows.
+clearly above (1.25x the threshold). An alert is cleared after four quiet rows. If a control
+changed markedly in the row that raised the alert, the line says so.
 
 The file must have a header row naming the sensors the model was trained on; extra columns are
-ignored, and the delimiter (comma, semicolon, tab or pipe) is taken from the header. A row is
-scored once its line is complete. If the file is truncated or replaced, as log rotation does,
-reading restarts from the top of the new file.
+ignored, lines starting with `#` are skipped, and the delimiter (comma, semicolon, tab or pipe) is
+taken from the header. A row is scored once its line is complete. If the file is truncated or
+replaced, as log rotation does, reading carries on from the top of the new content with the same
+columns.
 
 ### From your own code
 
@@ -457,8 +565,10 @@ for row in incoming_rows:                 # dict: {column: value}
 ```
 
 `step.is_anomaly` is the raw per-reading flag; `step.alert` adds the debouncing described above.
-`step.expected` and `step.values` hold the per-sensor numbers. Missing values in a row are carried
-forward from the previous reading.
+`step.expected` and `step.values` hold the per-sensor numbers and `step.controls_changed` names
+any control that moved markedly in this row. A value that is missing or not a finite number is
+"no reading": the last real value is held and that sensor is not scored for the row. A monitor
+gives the same scores as `detect` on the same rows.
 
 ---
 
@@ -470,7 +580,9 @@ rcwe serve
 
 Opens `http://127.0.0.1:8765`. Drop a log (and optionally a known-good log), choose the options,
 and read the report in the page. Downloads for the report, events, scores, forecast and model are
-offered when the analysis finishes. Files are posted to this local server only.
+offered when the analysis finishes. Files are posted to this local server only. The two files
+together may be up to 56 MB; use `rcwe analyze` for larger ones. Studio keeps the 25 most recent
+analyses in the output folder and removes older ones, so download what you want to keep.
 
 ```bash
 rcwe ui
@@ -480,8 +592,9 @@ Opens Mission Control: the engine running on its built-in sandbox next to a froz
 The buttons mutate the simulation and every figure is measured on each tick. Dropping a telemetry
 file on the page analyses it and links to the full report.
 
-The server listens on `127.0.0.1` and has no login. It refuses requests that do not come from its
-own pages. Use `--host` to expose it only on a network you trust.
+The server listens on `127.0.0.1` and has no login. It answers its API only to its own pages,
+checks the address it was reached by, and does not let other sites frame those pages. Use
+`--host` to expose it only on a network you trust.
 
 ---
 
@@ -492,7 +605,7 @@ Exit status:
 | Status | Meaning |
 |---|---|
 | 0 | Success. |
-| 1 | Error (bad input, missing file, ...); the message is on stderr. |
+| 1 | Error: bad input, a missing file, or a mistake on the command line. The message is on stderr. |
 | 2 | `--fail-on-anomaly` was given and at least one event or alert was found. |
 
 A nightly check:
@@ -502,7 +615,9 @@ rcwe detect /data/today.csv -m /models/plant.rcwe --json /reports/today.json --r
 ```
 
 `result.json` is stable to parse: `event_count`, `events[]` (with `start_time`, `end_time`,
-`severity`, `kind`, `sensors[]`, `description`), `sensor_ranking[]`, `metrics`.
+`severity`, `kind`, `sensors[]`, `control_changes[]`, `description`), `sensor_ranking[]`,
+`metrics`. Readings are written with twelve significant digits; values that are not finite are
+`null`.
 
 ---
 
@@ -514,13 +629,20 @@ Start with `rcwe doctor`.
 |---|---|
 | `No numeric sensor columns were found` | The delimiter or header was not recognised. Run `rcwe inspect`; pass `--sensors` explicitly. |
 | `Sensor 'x' that this model was trained on is missing` | The new file must contain the sensors the model was trained on, with the same names. |
+| Dates come out in the wrong order, or as the wrong month | Check the note that says how they were read. Dates like `03/04/2026` fit two readings; ISO dates (`2026-04-03`) fit one. |
+| A number is 1000 times too large or too small | Check the notes for how a thousands separator or decimal mark was read; write numbers without thousands separators to be sure. |
 | Everything is flagged from the first row | The new log is on a different scale or operating point than the training log. Train on data from the same regime, or use `--adapt`. |
 | One giant event hides later ones | Something stays wrong for the rest of the log (a changed constant, a permanent offset). Look at the per-sensor panels in the report, or scan the later part separately. |
 | Many short low-severity events | Lower the sensitivity (`--sensitivity low`), or raise `--train-rows` so more normal variation is learned. |
+| An event every time a setpoint is changed | The event says which control moved. Declare that control with `--commands` and train on a log that contains such changes. |
+| A planned control change does not move the forecast | The control was not declared as a command when the model was trained (the forecast's notes name it). |
 | `out of range` events you do not care about | Add `--no-range-check`. |
 | Skill is near 0% | The signals are close to unpredictable step to step, or the log is too short. Detection still works; do not rely on the forecast. |
+| `... was written by an earlier build of RCWE` | Model files from before this release cannot be read; train the model again with `rcwe fit`. |
+| `... is damaged: its contents do not match the checksum` | The model file was altered or truncated after it was saved. Copy it again or retrain. |
+| `RCWE_DEVICE asks for CUDA, but ...` | The device you asked for is not available here. Unset `RCWE_DEVICE`, or pass `--device cpu`. |
 | Training is slow or fails on a GPU | Pass `--device cpu`. For logs this size the CPU is usually as fast. |
-| Report shows fewer points than rows | Long logs are thinned for display: the highest score of every stretch is kept, and the rows around the strongest events are kept in detail. `scores.csv` has every row. |
+| Report shows fewer points than rows | Long logs are thinned for display: the highest score of every stretch is kept, every event keeps its outline, and the strongest events are kept in detail. `scores.csv` has every row. |
 
 ---
 
@@ -534,5 +656,11 @@ Start with `rcwe doctor`.
   or a legitimate new operating mode is your call; adaptive mode exists for the second case.
 - **Attribution is evidence, not proof.** The first-named sensor is where the deviation is
   sharpest. A fault that shows only through its effect on other sensors will be attributed to them.
+- **Controls are only as useful as you make them.** Unless a control is declared as a command,
+  the model does not anticipate what a change in it will do. Declared, it learns the response
+  from the changes the training log contains and reproduces most of it, not all.
+- **The first two rows of a scan cannot surprise.** There is nothing to compare the first with,
+  and the second is predicted from a guessed rate of change. Range and stuck-sensor checks apply
+  from the first row.
 - **Forecast intervals are empirical.** They reflect how the model did on the held-out part of the
-  training log, and assume the future resembles it.
+  training log with controls held where they were, and assume the future resembles it.

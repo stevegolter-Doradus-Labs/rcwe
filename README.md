@@ -35,12 +35,12 @@ learns normal behaviour, scans the incident log, forecasts ahead, and opens an i
 It takes about 20 seconds on a laptop CPU. No GPU is needed.
 
 ```text
-5 anomaly events detected, covering 19.7% of the log (threshold 4.5 sigma).
-  #1 [HIGH] 2026-03-12T20:00:00Z to 2026-03-13T04:25:00Z (102 steps): bearing_temp_c went above the range seen in training (reached 45.56) ...
-  #2 [CRITICAL] 2026-03-13T20:00:00Z to 2026-03-13T23:55:00Z (48 steps): pressure_bar ran below expectations (6.5 vs 7.45 expected at the peak) ...
-  #3 [HIGH] 2026-03-14T14:00:00Z to 2026-03-14T14:10:00Z (3 steps): flow_m3h jumped above expectations (68.04 vs 39.76 expected) ...
+5 anomaly events detected, covering 19.5% of the log (threshold 4.5 sigma).
+  #1 [HIGH] 2026-03-12T20:00:00Z to 2026-03-13T04:20:00Z (101 steps): bearing_temp_c went above the range seen in training (reached 50.51) ...
+  #2 [CRITICAL] 2026-03-13T20:00:00Z to 2026-03-13T23:50:00Z (47 steps): pressure_bar ran below expectations (6.5 vs 7.45 expected at the peak) ...
+  #3 [HIGH] 2026-03-14T14:00:00Z to 2026-03-14T14:10:00Z (3 steps): flow_m3h jumped above expectations (68.04 vs 39.62 expected) ...
   #4 [HIGH] 2026-03-15T06:45:00Z to 2026-03-15T10:05:00Z (41 steps): vibration_mm_s stopped changing (stuck at 1.93) ...
-  #5 [HIGH] 2026-03-16T00:00:00Z to 2026-03-16T03:25:00Z (42 steps): motor_power_kw ran above expectations (36.55 vs 33.37 expected at the peak) ...
+  #5 [HIGH] 2026-03-16T00:00:00Z to 2026-03-16T03:25:00Z (42 steps): motor_power_kw ran above expectations (36.78 vs 31.49 expected at the peak) ...
 Against the labels in the file: 5 of 5 incidents caught, 0 false alarms, median delay 0 step(s), AUROC 0.988.
 ```
 
@@ -53,8 +53,9 @@ end-to-end test, and tells you how to fix whatever it finds.
 
 Any CSV, TSV, JSON or JSON-lines file with one row per time step works. Numeric columns become
 sensors; a timestamp column is found automatically; columns named like `act_*`, `u_*`, `ctrl_*`,
-`cmd_*` or `*_setpoint` are treated as control inputs. Gaps, decimal commas, shuffled rows and
-running totals are handled, and every decision is listed for you (`rcwe inspect your_log.csv`).
+`cmd_*` or `*_setpoint` are treated as control inputs. Gaps, decimal commas and thousands
+separators, day-first dates, Unix timestamps, shuffled rows, status flags and running totals are
+handled, and every decision is listed for you (`rcwe inspect your_log.csv`).
 
 ### From the command line
 
@@ -125,6 +126,7 @@ The full reference, including every command, option and API call, is in the
 | **Four complementary checks** | Sudden jumps, small-but-persistent drift, readings outside anything seen in training, and stuck sensors. |
 | **A report you can send** | One self-contained HTML file: timeline, zoomable events, per-sensor charts, forecast, light and dark themes. Opens offline. |
 | **Forecasts with honest intervals** | Intervals come from backtests on held-out data. Where the model has no skill for a sensor, the forecast falls back to "it holds its latest value" and says so. |
+| **Controls you can plan with** | Declare setpoints or schedules as commands (`--commands`) and the model learns how the sensors respond: forecasts follow a planned change, and an event that begins as a control moves says so. |
 | **A measure of trust** | Every model reports its accuracy against the naive "next value = current value" baseline, per sensor, on data it was not trained on. |
 | **Two modes** | *Reference* compares against learned normal behaviour, so an abnormal period stays flagged. *Adaptive* uses the engine's online plasticity to flag the onset of a change and then accept the new normal. |
 | **Integration hooks** | Exit status for scripts and CI (`--fail-on-anomaly`), JSON and CSV exports, JSON-lines alerts from `rcwe watch`, a single-file model format loaded with PyTorch's safe loader. |
@@ -135,10 +137,15 @@ Each sensor reading is paired with its rate of change, giving the phase-space st
 designed around. The engine learns to predict the next state from the current one and the control
 inputs; anomalies are places where reality and prediction part ways, scored in calibrated sigmas.
 
-- Predictions are always made **before** the engine sees the true next value.
-- Calibration uses rows held out from training.
+- Predictions are always made **before** the engine sees the true next value. A missing reading
+  is never scored, and never filled in with what came after it.
+- Calibration uses rows held out from training, with statistics that a few wild readings in the
+  log cannot move.
 - Where the engine does not beat the naive baseline for a sensor, its prediction is shrunk toward
   that baseline rather than trusted.
+- A control column might be a controller reacting to the sensors, so by default the model is
+  never told a control's value for the reading it is predicting. Controls you declare as commands
+  are used in full.
 
 Things to know before relying on it:
 
@@ -150,6 +157,9 @@ Things to know before relying on it:
 - **The model looks one step back.** It uses each sensor's level and rate of change, not long
   seasonal history, so forecasts are most useful over short horizons. Check the per-sensor skill in
   your report.
+- **Controls need declaring.** Until a control is declared as a command, a planned change in it
+  does not move the forecast, and a large setpoint step can raise an event (which then names the
+  control that moved).
 
 ---
 
@@ -193,7 +203,8 @@ caveats are in **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)**, which is generated 
 | Benchmark | Result |
 |---|---|
 | Toolkit on the demo data (5 datasets x 5 planted faults) | 25 / 25 faults caught, 25 / 25 attributed to the right sensor, 0 false alarms, AUROC 0.99 |
-| Toolkit forecast skill vs naive baseline (held-out) | +29% to +32% one step ahead, +79% to +92% at 48 steps |
+| Toolkit forecast skill vs naive baseline (held-out rows, same 5 datasets) | +29% to +31% one step ahead, +79% to +92% at 48 steps |
+| Toolkit forecast response to a planned control change (3 datasets) | 87% of the plant's true response with the controls declared as commands; 0% without |
 | Engine vs frozen Transformer after a topology mutation (3 seeds) | 106x lower MSE (0.00074 vs 0.0778), unchanged when the engine is scored before it sees the answer |
 | Energy drift of predictions vs the Transformer | 2.3x lower |
 | Regime identification on fresh rollouts | 100% over 3 seeds |
@@ -255,7 +266,8 @@ python -m pip install -e ".[dev]"
 make test
 ```
 
-`make help` lists every shortcut. The test suite runs on CPU in about three minutes.
+`make help` lists every shortcut. `make fast` is a smoke test that takes a few seconds; the full
+suite (about 140 tests) takes several minutes on a laptop CPU.
 
 ## Citation
 

@@ -10,11 +10,31 @@ or five lines of Python take a log file to explained anomalies, forecasts and a 
   `forecast`, `stream`, `save` and `load`; `load_table` for CSV, TSV, JSON, JSON-lines and `.gz`
   files (Excel and Parquet with the `data` extra), lists of dicts, dicts of columns, NumPy arrays
   and pandas DataFrames.
-  - Sensor, control, time and label columns are detected and reported. Gaps, decimal commas,
-    shuffled rows, running totals and constant columns are handled, and every decision is listed.
+  - Sensor, control, time and label columns are detected and reported, and every decision is
+    listed. The loader works out, per column and from the data, whether dates are day-first or
+    month-first, whether a comma is a decimal mark or a thousands separator, and whether a numeric
+    clock is in seconds, milliseconds or a compact `YYYYMMDDhhmmss` stamp. Comma, semicolon, tab
+    and pipe delimiters, header-less files, comment lines, separate date and time columns, UTF-16
+    exports, shuffled rows and repeated timestamps are handled.
   - Anomaly scores in calibrated sigmas from four signals (sudden jump, sustained deviation, out of
     range, flatline), grouped into events with severity, kind, the sensors responsible, and actual
     versus expected values.
+  - Calibration that a dirty log cannot bend: scales and ranges come from statistics that a few
+    wild readings do not move, so one glitch in the training rows neither hides later faults nor
+    floods the scan with alarms. Status flags, running totals, steadily ticking counters and
+    constant columns each get the treatment they need.
+  - Missing readings are held at the last known value and never scored; the reading after a gap is
+    judged against how far a sensor can move in that many steps. Scanning a file and feeding the
+    same rows one at a time give the same answer.
+  - **Controls as commands.** By default a control is only used up to the row being predicted
+    from, because it might be a controller reacting to the sensors. Controls declared with
+    `fit(..., commands=...)` or `--commands` (and columns named like `setpoint_*` or `*_sp`) are
+    also given for the row being predicted, so the model learns how the sensors respond: forecasts
+    follow a planned change (`forecast(..., future_controls=...)`, `--planned-controls`), and
+    one-step skill on the demo plant rises from about 25% to about 33%.
+  - An event that begins as a control moves says so ("coincides with a change in act_pump_speed
+    (0.6 to 0.65)"; `event.control_changes`, `step.controls_changed` when streaming), which tells
+    an operator's step from a fault at a glance.
   - Reference mode and adaptive mode. Adaptive mode uses the engine's online plasticity, applied
     only after each prediction has been scored.
   - Forecasts with 80% and 95% intervals taken from backtests on held-out rows, and a per-sensor
@@ -23,13 +43,21 @@ or five lines of Python take a log file to explained anomalies, forecasts and a 
     overall, per sensor and by forecast horizon.
 - **The `rcwe` command** (also `python -m rcwe`): `quickstart`, `analyze`, `fit`, `detect`,
   `forecast`, `watch`, `inspect`, `serve`, `ui`, `bench`, `demo-data`, `doctor`, `version`.
-  `--fail-on-anomaly` gives exit status 2 for scripts and CI. `watch` follows a growing file like
-  `tail -F`, including across log rotation.
+  `--fail-on-anomaly` gives exit status 2 for scripts and CI; every error, including a mistyped
+  option, gives 1, so a typo can never be read as "anomalies found". Options are checked before
+  any work starts, and an output path that cannot be written is reported up front. `watch` follows
+  a growing file like `tail -F`, including across log rotation and truncation.
 - **Interactive HTML report** (`result.to_html()` or `--report`): one self-contained file that
   needs no network access, with light and dark themes, hover read-outs, zoom-to-event, a forecast
   panel and a per-sensor trust table.
 - **RCWE Studio** (`rcwe serve`): drop a log in the browser, read the report, download the outputs.
-  It listens on `127.0.0.1` and refuses requests that do not come from its own pages.
+  It listens on `127.0.0.1`, refuses requests that do not come from its own pages, cannot be
+  framed by another site, keeps the 25 most recent analyses and deletes each upload once it has
+  been read.
+- Model files (`.rcwe`) carry a checksum and are refused if they are damaged or were written by an
+  incompatible version, instead of loading into a model that quietly misbehaves.
+- Exports are safe to open: CSV cells that a spreadsheet would run as a formula are neutralised,
+  and readings keep twelve significant digits.
 - **Built-in demo dataset**: a pump station with six sensors, two controls and five labelled
   faults, used by `quickstart`, the examples and the tests.
 - **`rcwe doctor`**: checks Python, PyTorch, NumPy, the accelerator and the output folder, runs an
@@ -69,6 +97,15 @@ or five lines of Python take a log file to explained anomalies, forecasts and a 
 - `BaselineCausalTransformer` had the same run-time resizing; it now checks its input widths.
 - The code-trace test required RCWE to beat the Transformer by a margin that only held on one
   platform; it now asserts parity, which is what the benchmark shows.
+
+### How this release was checked
+- About 140 tests, run on Python 3.13 with PyTorch 2.15 and on Python 3.10 with PyTorch 2.1 and
+  NumPy 1.26; the wheel was installed and exercised in a clean environment.
+- Three independent reviews of the new code (ingestion and CLI, the modelling core, the web layer)
+  reproduced 60 defects before release. All were fixed and pinned with regression tests, except
+  the two listed below.
+- Known gaps: an analysis running in Studio cannot be cancelled, and `TelemetryTable.to_csv` does
+  not record which columns were chosen as controls or labels (pass them again when reloading).
 
 ### A note on earlier figures
 The numbers quoted in the entries below are the ones reported when each version was released.
