@@ -12,15 +12,41 @@ class SymplecticCausalBlock(nn.Module):
         self.dt = step_size
 
         self.q_coupling = nn.Linear(d_model, d_model, bias=False)
-        self.a_coupling = nn.Linear(d_action, d_model, bias=False)
+        self.a_coupling = nn.Linear(d_action, d_model, bias=False) if d_action > 0 else nn.Linear(8, d_model, bias=False)
         self.potential_net = nn.Sequential(
-            nn.Linear(d_model + d_action, d_model * 2),
+            nn.Linear(d_model + max(d_action, 8), d_model * 2),
             nn.SiLU(),
             nn.Linear(d_model * 2, 1),
         )
         self.log_inv_mass = nn.Parameter(torch.zeros(d_model))
 
     def _scalar_potential(self, q_intervened: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        in_f_action = action.shape[-1]
+        in_f_q = q_intervened.shape[-1]
+
+        if in_f_q != self.q_coupling.in_features:
+            device = action.device
+            new_qc = nn.Linear(in_f_q, self.q_coupling.out_features, bias=False).to(device)
+            nn.init.zeros_(new_qc.weight)
+            new_qc.weight.data[:, :min(in_f_q, self.q_coupling.in_features)] = self.q_coupling.weight.data[:, :min(in_f_q, self.q_coupling.in_features)]
+            self.q_coupling = new_qc
+
+        if in_f_action != self.a_coupling.in_features:
+            device = action.device
+            new_ac = nn.Linear(in_f_action, self.a_coupling.out_features, bias=False).to(device)
+            nn.init.zeros_(new_ac.weight)
+            new_ac.weight.data[:, :min(in_f_action, self.a_coupling.in_features)] = self.a_coupling.weight.data[:, :min(in_f_action, self.a_coupling.in_features)]
+            self.a_coupling = new_ac
+            
+        old_linear = self.potential_net[0]
+        if old_linear.in_features != in_f_q + in_f_action:
+            device = action.device
+            new_linear = nn.Linear(in_f_q + in_f_action, old_linear.out_features).to(device)
+            nn.init.zeros_(new_linear.weight)
+            new_linear.weight.data[:, :min(in_f_q + in_f_action, old_linear.in_features)] = old_linear.weight.data[:, :min(in_f_q + in_f_action, old_linear.in_features)]
+            new_linear.bias.data = old_linear.bias.data
+            self.potential_net[0] = new_linear
+            
         coupled = self.q_coupling(q_intervened) + self.a_coupling(action)
         quad_pot = 0.5 * (coupled ** 2).mean(dim=-1)
         nl_pot = self.potential_net(torch.cat([q_intervened, action], dim=-1)).squeeze(-1)

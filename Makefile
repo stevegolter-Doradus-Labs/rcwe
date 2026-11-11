@@ -36,3 +36,15 @@ serve:
 
 phase2:
 	@$(VENV_PYTHON) -m rcwe.diagnostics.phase2_v07
+
+train-corpus:
+	@$(VENV_PYTHON) -m rcwe.lm.corpus_trainer
+
+custom-data:
+	@$(VENV_PYTHON) -m rcwe.ingestion.custom_connector
+
+v09:
+	@$(VENV_PYTHON) -m rcwe.v09_runner
+
+ui:
+	@$(VENV_PYTHON) -m rcwe.ui.mission_control

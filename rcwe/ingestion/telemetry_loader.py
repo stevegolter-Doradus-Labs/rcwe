@@ -119,7 +119,7 @@ class TelemetryIngestionLoader:
             ignore = {"timestamp", "timestamp_step", "date", "time", "regime", "regime_label", "label", "anomaly"}
             numeric_cols = []
             for k in keys:
-                if k.lower() not in ignore:
+                if k.lower() not in ignore and k not in act_cols:
                     try:
                         float(rows[0][k])
                         numeric_cols.append(k)
@@ -154,6 +154,13 @@ class TelemetryIngestionLoader:
 
         q_t = torch.tensor(q_list, dtype=torch.float32, device=device)
         p_t = torch.tensor(p_list, dtype=torch.float32, device=device)
+        
+        # Normalize if SCADA-like
+        if q_t.std() > 10.0:
+            q_t = (q_t - q_t.mean(dim=0)) / q_t.std(dim=0).clamp(min=1e-6)
+        if p_t.std() > 10.0:
+            p_t = (p_t - p_t.mean(dim=0)) / p_t.std(dim=0).clamp(min=1e-6)
+        
         state_all = torch.cat([q_t, p_t], dim=-1).unsqueeze(0)
         act_all = torch.tensor(act_list, dtype=torch.float32, device=device).unsqueeze(0)
 
