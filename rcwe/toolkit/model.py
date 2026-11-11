@@ -24,7 +24,9 @@ things keep the results honest:
 * Controls are only trusted as far as they can be. A control column may itself react to the
   sensors (a controller output), so by default the model sees control values only up to the
   row it predicts *from*. Columns declared as commands (setpoints, schedules: values chosen
-  independently of the sensors) are also given for the row being predicted.
+  independently of the sensors) are also given for the row being predicted. A forecast that
+  comes with no plan for the commands is made by a companion model that is never told them,
+  so declaring commands cannot make such a forecast worse.
 * A naive baseline is always in the room. Accuracy is reported as skill versus "next value
   = current value", and a per-sensor calibration shrinks the engine's prediction toward
   that baseline wherever the engine does not beat it on held-out data.
@@ -179,6 +181,9 @@ def _digest(payload: Dict[str, Any]) -> str:
     return sha.hexdigest()
 
 
+_CONTROLS_HELD = "Controls were assumed to stay at their latest values."
+
+
 def _is_setpoint_name(name: str) -> bool:
     low = name.lower()
     return low.startswith(("setpoint_", "sp_")) or low.endswith(("_setpoint", "_sp"))
@@ -298,6 +303,7 @@ class TelemetryModel:
         self._tail: Optional[TelemetryTable] = None     # the end of the training log, for forecasts that continue it
         self._tail_offset = 0
         self._fit_table: Optional[TelemetryTable] = None
+        self._free: Optional["TelemetryModel"] = None   # trained without commands; forecasts for which no plan is given
 
     # ------------------------------------------------------------------------------
     # basics
@@ -503,7 +509,9 @@ class TelemetryModel:
             it; any other control is only used up to the previous reading, because a
             controller output that reacts to the sensors would otherwise give the answer away.
             Default: controls named like setpoints (`setpoint_*`, `sp_*`, `*_setpoint`,
-            `*_sp`). Pass a list of names, True / "all", or False / "none".
+            `*_sp`). Pass a list of names, True / "all", or False / "none". With commands,
+            training runs twice: the second model is not told them and makes the forecasts
+            for which no plan is given.
         """
         table = load_table(data, sensors=sensors, controls=controls, time_column=time_column, label_column=label_column)
         notes = list(table.notes)
@@ -511,7 +519,12 @@ class TelemetryModel:
         T, n = table.n_rows, table.n_sensors
         if T < 12:
             raise DataError(f"Training needs at least 12 time steps; this log has {T}.")
-        say = progress or (lambda stage, fraction, message: None)
+        report = progress or (lambda stage, fraction, message: None)
+        share = [1.0]                                      # of the progress bar; half when a companion is trained as well
+
+        def say(stage: str, fraction: float, message: str) -> None:
+            report(stage, share[0] * fraction, message)
+
         say("prepare", 0.0, f"Preparing {T:,} rows x {n} sensors")
 
         cfg = self.settings
@@ -546,6 +559,8 @@ class TelemetryModel:
                                 f"{', '.join(unknown)}.")
             self.commands = [c for c in self.controls if c in wanted]
         self._shift = np.array([1.0 if c in self.commands else 0.0 for c in self.controls])
+        if self.commands:
+            share[0] = 0.5
 
         # ---- scales (from the training part only, with wild readings set aside) -----------
         train = values[:n_tr]
@@ -735,9 +750,28 @@ class TelemetryModel:
         elif weak and len(weak) < n:
             notes.append("No predictive skill beyond 'last value' for: " + ", ".join(weak) + ".")
 
+        # ---- forecasts for which no plan is given ----------------------------------------
+        # A model that is told its commands learns to lean on them, and a forecast made without
+        # a plan can only tell it that they stay where they are. A companion that is never told
+        # them carries on from the sensors' own behaviour instead, exactly as a model without
+        # commands does, so declaring commands cannot make such a forecast worse.
+        self._free = None
+        seconds = history["seconds"]
+        if self.commands:
+            companion = TelemetryModel(**cfg)
+            companion.fit(table, commands=False,
+                          progress=lambda stage, fraction, message: report("companion", 0.5 + 0.49 * fraction,
+                                                                           "Forecasts without a plan: " + message[:1].lower() + message[1:]))
+            self._free = companion
+            card = companion.fit_summary_
+            forecast_skill, horizon, seconds = dict(card.forecast_skill), card.forecast_horizon, seconds + card.seconds
+            notes.append("Forecasts for which no plan is given come from a companion model that is not told the commands "
+                         "in advance, so they do not assume the commands stay where they are. Training ran twice for this.")
+            share[0] = 1.0
+
         self.fit_summary_ = FitSummary(
             rows=T, train_rows=n_tr, validation_rows=n_val, sensors=list(self.sensors), controls=list(self.controls),
-            steps_run=history["steps"], best_step=history["best_step"], seconds=history["seconds"],
+            steps_run=history["steps"], best_step=history["best_step"], seconds=seconds,
             device=describe_accelerator(self._device),
             parameters=sum(prm.numel() for prm in self.engine.parameters()),
             skill=skill, sensor_skill={s: float(k) for s, k in zip(self.sensors, sensor_skill)},
@@ -1131,14 +1165,21 @@ class TelemetryModel:
 
         future_controls : optional planned control values for the forecast window
             (array [steps, n_controls], or a table/file with the control columns). Without
-            it, controls are assumed to stay at their latest values. A plan moves the
-            forecast only as far as the model has learned to respond to that control: see
-            `commands` in `fit`.
+            it, controls are assumed to stay at their latest values, and a model with
+            commands answers through its companion, which does not use them as commands.
+            A plan moves the forecast only as far as the model has learned to respond to
+            that control: see `commands` in `fit`.
         """
         self._require_fitted()
         steps = int(steps)
         if steps < 1:
             raise ValueError("steps must be at least 1.")
+        if future_controls is None and self._free is not None:
+            forecast = self._free.forecast(steps, data)
+            forecast.notes = [note for note in forecast.notes if note != _CONTROLS_HELD] + [
+                f"No plan was given for {', '.join(self.commands)}, so this forecast does not use them as commands. "
+                "Pass future_controls (--planned-controls) to see what a planned change does."]
+            return forecast
         notes: List[str] = []
         if data is None:
             if self._tail is None:
@@ -1178,7 +1219,7 @@ class TelemetryModel:
                 notes.append("The model reacts to a plan mainly through controls it was told are commands; "
                              f"it has not learned to anticipate a change in: {', '.join(unheard)}.")
         elif self.controls:
-            notes.append("Controls were assumed to stay at their latest values.")
+            notes.append(_CONTROLS_HELD)
         elif future_controls is not None:
             notes.append("This model has no control inputs; future_controls was ignored.")
 
@@ -1270,9 +1311,8 @@ class TelemetryModel:
     # ------------------------------------------------------------------------------
     # persistence
     # ------------------------------------------------------------------------------
-    def save(self, path: Union[str, Path]) -> str:
-        """Save everything needed to reuse the model (weights, scalers, calibration) in one file."""
-        self._require_fitted()
+    def _payload(self) -> Dict[str, Any]:
+        """Everything `save` writes, as plain containers and tensors (no checksum yet)."""
 
         def tensor(arr: Optional[np.ndarray]) -> Optional[torch.Tensor]:
             return None if arr is None else torch.as_tensor(np.asarray(arr), dtype=torch.float64)
@@ -1307,7 +1347,14 @@ class TelemetryModel:
                 "time_offset": None if tail.time_offset is None else float(tail.time_offset),
                 "offset": int(self._tail_offset),
             },
+            "companion": None if self._free is None else self._free._payload(),
         }
+        return payload
+
+    def save(self, path: Union[str, Path]) -> str:
+        """Save everything needed to reuse the model (weights, scalers, calibration) in one file."""
+        self._require_fitted()
+        payload = self._payload()
         payload["digest"] = _digest(payload)
         out = Path(path)
         if out.is_dir():
@@ -1392,6 +1439,8 @@ class TelemetryModel:
                 step_values=array(tail.get("step_values")), time_offset=tail.get("time_offset"),
             )
             model._tail_offset = int(tail.get("offset", 0))
+        if payload.get("companion"):
+            model._free = cls._from_payload(payload["companion"], device)
         return model
 
 

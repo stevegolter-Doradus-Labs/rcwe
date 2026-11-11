@@ -198,6 +198,13 @@ flow forecast by 0% of the plant's true response by default and by 87% with the 
 as commands, and one-step skill rose from about 25% to 33%. The model learns a response only
 from changes of that kind in the training log.
 
+Declaring commands does not change the forecasts you ask for without a plan. A model that is told
+its commands learns to lean on them, and with no plan all a forecast could tell it is that they
+stay where they are, which is a poor guess for a schedule that keeps moving. So when commands are
+declared, `fit` trains a second, companion model that is never told them, and a forecast made
+without `--planned-controls` comes from that one (its notes say so). The price is time: training
+runs twice.
+
 Either way, an event that begins as a control changes markedly says so, which is usually enough
 to tell an operator's action from a fault:
 
@@ -399,7 +406,9 @@ forecast.to_csv("forecast.csv")
 Where the backtest made during `fit` shows the model cannot beat "the sensor holds its latest
 value (plus its usual trend)", the forecast for that sensor is exactly that, and `model_weight`
 says so. Controls are assumed to stay at their latest values unless you pass `future_controls`
-(an array `[steps, controls]`, or a file, table or list of rows with the control columns).
+(an array `[steps, controls]`, or a file, table or list of rows with the control columns). A model
+with commands makes a forecast without a plan through its companion model
+([section 3](#controls-reacting-or-commanding)).
 
 To show a forecast in the report, attach it first: `result.forecast = forecast`.
 
@@ -514,6 +523,8 @@ matter: a few wild readings in the training log do not distort what the model le
 
 If your control columns are setpoints or schedules, say so with `--commands`
 ([section 3](#controls-reacting-or-commanding)). It is what lets forecasts respond to a plan.
+Training then takes about twice as long, because a companion model is trained for the forecasts
+you ask for without a plan.
 
 ---
 
@@ -636,6 +647,7 @@ Start with `rcwe doctor`.
 | Many short low-severity events | Lower the sensitivity (`--sensitivity low`), or raise `--train-rows` so more normal variation is learned. |
 | An event every time a setpoint is changed | The event says which control moved. Declare that control with `--commands` and train on a log that contains such changes. |
 | A planned control change does not move the forecast | The control was not declared as a command when the model was trained (the forecast's notes name it). |
+| Training takes twice as long as it did | Commands were declared, or picked up from names such as `*_setpoint`, so a companion model is trained as well. `--commands none` turns both off. |
 | `out of range` events you do not care about | Add `--no-range-check`. |
 | Skill is near 0% | The signals are close to unpredictable step to step, or the log is too short. Detection still works; do not rely on the forecast. |
 | `... was written by an earlier build of RCWE` | Model files from before this release cannot be read; train the model again with `rcwe fit`. |

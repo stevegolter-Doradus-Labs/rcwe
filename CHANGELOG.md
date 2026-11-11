@@ -31,7 +31,9 @@ or five lines of Python take a log file to explained anomalies, forecasts and a 
     `fit(..., commands=...)` or `--commands` (and columns named like `setpoint_*` or `*_sp`) are
     also given for the row being predicted, so the model learns how the sensors respond: forecasts
     follow a planned change (`forecast(..., future_controls=...)`, `--planned-controls`), and
-    one-step skill on the demo plant rises from about 25% to about 33%.
+    one-step skill on the demo plant rises from about 25% to about 33%. A forecast that comes
+    with no plan is made by a companion model that is never told the commands, so declaring them
+    cannot make it worse (it would otherwise assume they freeze); training runs twice for this.
   - An event that begins as a control moves says so ("coincides with a change in act_pump_speed
     (0.6 to 0.65)"; `event.control_changes`, `step.controls_changed` when streaming), which tells
     an operator's step from a fault at a glance.

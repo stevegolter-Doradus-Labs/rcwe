@@ -199,6 +199,42 @@ def test_declaring_commands_lets_a_forecast_respond_to_a_plan():
     assert "Commands" in as_commands.summary()
 
 
+def test_declaring_commands_costs_nothing_when_no_plan_is_given(tmp_path):
+    """
+    A model that is told its commands leans on them; with no plan, all a forecast could tell it
+    is that they freeze, which cost most of the long-range skill on a log whose commands keep
+    moving. Such forecasts now come from a companion that was never told them.
+    """
+    table = make_pump_station(rows=900, faults=False, seed=5, operator_steps=6).table
+    plain = TelemetryModel(max_steps=60, seed=0, device="cpu").fit(table, commands=False)
+    stages = []
+    told = TelemetryModel(max_steps=60, seed=0, device="cpu").fit(table, commands=True,
+                                                                  progress=lambda stage, fraction, message: stages.append(fraction))
+    assert stages == sorted(stages) and stages[-1] == 1.0                    # one progress bar across both trainings
+
+    expected, got = plain.forecast(24), told.forecast(24)
+    assert np.array_equal(got.values, expected.values) and np.array_equal(got.upper95, expected.upper95)
+    assert told.fit_summary_.forecast_skill == plain.fit_summary_.forecast_skill
+    assert got.model_weight == expected.model_weight
+    assert any("No plan was given for act_valve_open, act_pump_speed" in note for note in got.notes)
+    assert any("companion" in note for note in told.fit_summary_.notes)
+    assert np.array_equal(told.forecast(6, table.slice(700, None)).values, plain.forecast(6, table.slice(700, None)).values)
+
+    # With a plan the model that knows the commands answers, and scoring is its job alone.
+    last = table.to_rows()[-1]
+    plan = np.tile([last["act_valve_open"] + 0.10, last["act_pump_speed"]], (24, 1))
+    planned = told.forecast(24, future_controls=plan)
+    assert not np.allclose(planned.values, got.values) and not any("No plan" in note for note in planned.notes)
+    assert not np.array_equal(told.detect(table).scores, plain.detect(table).scores)
+
+    # Both travel in the one model file.
+    again = TelemetryModel.load(told.save(tmp_path / "plant.rcwe"))
+    assert np.array_equal(again.forecast(24).values, got.values)
+    assert np.array_equal(again.forecast(24, future_controls=plan).values, planned.values)
+    assert np.array_equal(again.detect(table).scores, told.detect(table).scores)
+    assert plain._free is None and TelemetryModel.load(plain.save(tmp_path / "plain.rcwe"))._free is None
+
+
 def test_commands_are_chosen_by_name_or_named_explicitly():
     rows = [{"temp": 20 + math.sin(i / 9), "setpoint_temp": 20.0 + (i // 40) % 2, "act_heater": 0.5 + 0.1 * math.cos(i / 9)}
             for i in range(160)]

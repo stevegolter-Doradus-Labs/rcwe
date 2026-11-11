@@ -171,7 +171,8 @@ def _add_model_options(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--steps", type=_number(int, 1), metavar="N", help="maximum training steps (default 400; stops early when converged)")
     group.add_argument("--commands", metavar="X,Y|all|none",
                        help="control columns that are commands (setpoints, schedules: set independently of the sensors); "
-                            "the model learns how the sensors respond to them (default: columns named like setpoints)")
+                            "the model learns how the sensors respond to them, and training runs twice "
+                            "(default: columns named like setpoints)")
     group.add_argument("--seed", type=int, default=0, help="random seed (default 0)")
     group.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"], help="where to train (default: auto)")
 
