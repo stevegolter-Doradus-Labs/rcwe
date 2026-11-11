@@ -39,7 +39,12 @@ def _flag_anomalous_sensors(input_path: str, limit: int = 3) -> Dict[str, Any]:
         result = model.detect(table)
     except DataError as exc:
         return {"sensors": [], "events": [], "note": f"Anomaly attribution skipped: {exc}"}
-    ranked = [r["name"] for r in result.sensor_ranking() if r["anomalous_steps"] > 0]
+    # The sensors each event names (strongest event first, sharpest evidence first), then any
+    # others that spent time above the threshold.
+    ranked: List[str] = []
+    for event in sorted(result.events, key=lambda e: -e.peak_score):
+        ranked.extend(s["name"] for s in event.sensors if s["name"] not in ranked)
+    ranked.extend(r["name"] for r in result.sensor_ranking() if r["anomalous_steps"] > 0 and r["name"] not in ranked)
     return {"sensors": ranked[:limit], "events": [e.description for e in result.events], "note": ""}
 
 

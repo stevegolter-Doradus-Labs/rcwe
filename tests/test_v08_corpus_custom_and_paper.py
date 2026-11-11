@@ -20,7 +20,10 @@ def test_custom_dataset_connector_scada_substation(tmp_path: Path):
     rep = CustomDatasetConnector.run_custom_directory_scan(custom_dir=str(tmp_path / "custom_ds"))
     assert rep["inferred_sensors"] == 6
     assert rep["rcwe_tail_mse"] < rep["tf_tail_mse"]
-    assert len(rep["flagged_anomalous_sensors"]) >= 1
+    # The template faults five of its six sensors at once; reactive_MVAR stays healthy and must not be blamed.
+    faulted = {"voltage_bus_A_kV", "voltage_bus_B_kV", "current_line_1_A", "freq_Hz", "transformer_oil_C"}
+    assert rep["flagged_anomalous_sensors"] and set(rep["flagged_anomalous_sensors"]) <= faulted
+    assert "also involved" in rep["anomaly_events"][0]          # the other faulted sensors are named, not just the sharpest
 
 
 def test_arxiv_latex_preprint_exists_and_well_formed():

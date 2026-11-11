@@ -16,7 +16,7 @@ import json
 import math
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 
@@ -114,9 +114,12 @@ def build_report_data(
         }
 
     model = dict(result.model_info)
+    if isinstance(model.get("source"), str) and not model["source"].startswith("<"):
+        model["source"] = Path(model["source"]).name
     return {
         "title": title or "RCWE anomaly report",
-        "source": result.source,
+        # A report is something people pass around: show the file's name, not where it sat on disk.
+        "source": Path(result.source).name if result.source and not result.source.startswith("<") else (result.source or ""),
         "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "version": __version__,
         "mode": result.mode,

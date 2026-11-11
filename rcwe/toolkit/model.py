@@ -40,7 +40,7 @@ from rcwe.core.engine import ResonantCausalWorldEngine
 from rcwe.kernels.accelerator import describe_accelerator, select_best_device
 from rcwe.toolkit.results import AnomalyEvent, DetectionResult, FitSummary, Forecast, _fmt
 from rcwe.toolkit.scoring import (
-    NOMINAL_LEVEL, REASON_TEXT, REASONS, ScoreCalibration, detection_metrics, ewma, find_events,
+    REASON_TEXT, REASONS, ScoreCalibration, detection_metrics, ewma, find_events,
     longest_run, resolve_threshold, robust_sigma, score_residuals,
 )
 from rcwe.toolkit.table import DataError, TelemetryTable, format_time, load_table
@@ -746,8 +746,10 @@ class TelemetryModel:
         total = float(excess.sum()) or 1.0
         # Rank by peak evidence: the sensor that misbehaves produces the sharpest deviation, while
         # sensors that merely disagree with it (knock-on effects) build up weaker, slower evidence.
+        # A secondary sensor is named when its own evidence is a fair fraction of the lead's -- or is
+        # overwhelming in its own right, however extreme the lead is.
         ranked = np.argsort(-peaks, kind="stable")
-        floor = max(1.2 * threshold, 0.3 * float(peaks[ranked[0]]))
+        floor = max(1.2 * threshold, min(0.3 * float(peaks[ranked[0]]), 5.0 * threshold))
         order = [int(i) for k, i in enumerate(ranked) if peaks[i] > threshold and (k == 0 or peaks[i] >= floor)][:5]
         involved: List[Dict[str, Any]] = []
         brief = b - a + 1 <= 4
@@ -862,7 +864,6 @@ class TelemetryModel:
             if interval is None and self._tail is not None:
                 interval = self._tail["sample_interval"]
 
-        n = len(self.sensors)
         qn, dq, p, un = self._normalise(values[-_CONTEXT:], ctrl[-_CONTEXT:])
         x, a = self._tensors(qn, p, un)
         field = None
@@ -870,7 +871,6 @@ class TelemetryModel:
             with torch.no_grad():
                 field = self.engine(x[:-1].unsqueeze(0), a[:-1].unsqueeze(0), plastic_runtime=False)["standing_field"]
 
-        m = un.shape[1]
         future = np.repeat(un[-1][None, None, :], steps, axis=1)
         if future_controls is not None and self.controls:
             planned = future_controls

@@ -18,7 +18,7 @@ import math
 import threading
 import time
 from collections import deque
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, Optional
 
 import torch
 import torch.nn.functional as F
