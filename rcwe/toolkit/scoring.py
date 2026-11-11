@@ -15,6 +15,7 @@ keeps a single threshold meaningful across signals and sensors.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -40,33 +41,55 @@ _EWMA_INPUT_LIMIT = 25.0
 
 
 def resolve_threshold(sensitivity: Any) -> float:
-    """Map 'low' | 'medium' | 'high' (or a number of sigmas) to a score threshold."""
+    """Map 'low' | 'medium' | 'high' (or a number of sigmas, also as text) to a score threshold."""
+    wanted = f"sensitivity must be one of {sorted(SENSITIVITY_LEVELS)} or a positive number of sigmas"
     if isinstance(sensitivity, str):
         key = sensitivity.strip().lower()
-        if key not in SENSITIVITY_LEVELS:
-            raise ValueError(f"sensitivity must be one of {sorted(SENSITIVITY_LEVELS)} or a number, got '{sensitivity}'.")
-        return SENSITIVITY_LEVELS[key]
-    value = float(sensitivity)
-    if not value > 0:
-        raise ValueError("sensitivity must be a positive number of sigmas.")
+        if key in SENSITIVITY_LEVELS:
+            return SENSITIVITY_LEVELS[key]
+        try:
+            sensitivity = float(key)
+        except ValueError:
+            raise ValueError(f"{wanted}, got '{sensitivity}'.") from None
+    try:
+        value = float(sensitivity)
+    except (TypeError, ValueError):
+        raise ValueError(f"{wanted}, got {sensitivity!r}.") from None
+    if not (value > 0 and math.isfinite(value)):
+        raise ValueError(f"{wanted}, got {sensitivity!r}.")
     return value
 
 
-def robust_sigma(residuals: np.ndarray, floor: float = 1e-6) -> np.ndarray:
+def robust_sigma(residuals: np.ndarray, floor: float = 1e-6, parts: bool = False) -> Any:
     """
     Per-column scale that is robust to outliers yet honest about heavy tails: the larger of
-    the MAD-based sigma and the sigma implied by the empirical 99th percentile.
+    the MAD-based sigma and the sigma implied by the tail of the distribution.
+
+    The tail value is the k-th largest absolute residual divided by the Gaussian 99th
+    percentile, with k = max(3, 1% of the rows). The two or three largest residuals never
+    count (one wild reading produces two), while a tail that holds 1% of the rows does.
+    Columns may contain NaN (cells that should not be counted). With `parts=True` the MAD
+    and tail values are returned separately.
     """
     res = np.asarray(residuals, dtype=float)
-    centered = res - np.median(res, axis=0, keepdims=True)
-    mad = 1.4826 * np.median(np.abs(centered), axis=0)
-    sigma = mad
-    if res.shape[0] >= 200:
-        q99 = np.quantile(np.abs(centered), 0.99, axis=0)
-        sigma = np.maximum(mad, q99 / _GAUSS_Q99)
-    elif res.shape[0] >= 8:
-        sigma = np.maximum(mad, np.std(res, axis=0))
-    return np.maximum(sigma, floor)
+    cols = res.shape[1]
+    mad = np.zeros(cols)
+    tail = np.zeros(cols)
+    for j in range(cols):
+        col = res[:, j]
+        col = col[np.isfinite(col)]
+        if col.size == 0:
+            continue
+        dev = np.abs(col - np.median(col))
+        mad[j] = 1.4826 * float(np.median(dev))
+        if col.size >= 30:
+            k = max(3, int(math.ceil(0.01 * col.size)))
+            tail[j] = float(np.partition(dev, col.size - k)[col.size - k]) / _GAUSS_Q99
+        elif col.size >= 8:
+            tail[j] = float(np.std(col))             # too few rows to read a tail from
+    if parts:
+        return np.maximum(mad, floor), np.maximum(tail, floor)
+    return np.maximum(np.maximum(mad, tail), floor)
 
 
 def ewma(values: np.ndarray, lam: float, initial: Optional[np.ndarray] = None) -> np.ndarray:
@@ -152,13 +175,17 @@ def score_residuals(
     level    : actual sensor level, level-normalised                         [T, n]
     delta    : actual change since the previous step, level-normalised       [T, n]
     state    : carry-over from the previous block (None for the start of a sequence)
-    valid    : optional [T] mask; rows marked False (e.g. the very first row, which has no
-               prediction) contribute nothing to the residual-based signals.
+    valid    : optional mask, [T] or [T, n]. Cells marked False (the very first row, which has
+               no prediction; readings that were missing and are only held values) raise no
+               signal of any kind and leave a "stuck sensor" run as it was.
     """
     residual = np.asarray(residual, dtype=float)
     T, n = residual.shape
     if valid is not None:
-        residual = np.where(valid[:, None], residual, 0.0)
+        valid = np.asarray(valid, dtype=bool)
+        if valid.ndim == 1:
+            valid = np.repeat(valid[:, None], n, axis=1)
+        residual = np.where(valid, residual, 0.0)
 
     z = residual / cal.sigma
     prev = None if state is None else state.get("ewma")
@@ -167,6 +194,8 @@ def score_residuals(
     limit = _EWMA_INPUT_LIMIT * cal.sigma
     smooth = ewma(np.clip(residual, -limit, limit), cal.ewma_lambda, initial=prev)
     drift_z = smooth / cal.ewma_sigma
+    if valid is not None:
+        drift_z = np.where(valid, drift_z, 0.0)       # the chart keeps its memory; the cell itself reports nothing
 
     range_z = np.zeros((T, n))
     if range_check and cal.range_lo is not None and cal.range_enabled is not None:
@@ -174,18 +203,21 @@ def score_residuals(
         # Capped: "how far outside" is not on the same footing as a residual in sigmas, and should
         # not outrank sharp model-based evidence when sensors are ordered by blame.
         range_z = np.minimum(NOMINAL_LEVEL * outside / cal.range_margin, 3.0 * NOMINAL_LEVEL) * (cal.range_enabled > 0)
+        if valid is not None:
+            range_z = np.where(valid, range_z, 0.0)
 
     flat_z = np.zeros((T, n))
     runs = np.zeros(n) if state is None or "flat" not in state else state["flat"].astype(float).copy()
     if cal.flat_run is not None and cal.flat_eps is not None:
         enabled = cal.flat_run > 0
         still = np.abs(delta) <= cal.flat_eps
-        if valid is not None:
-            still = still & valid[:, None]
         safe_run = np.where(enabled, cal.flat_run, 1.0)
         for t in range(T):
-            runs = np.where(still[t], runs + 1.0, 0.0)
+            counted = np.where(still[t], runs + 1.0, 0.0)
+            runs = counted if valid is None else np.where(valid[t], counted, runs)
             flat_z[t] = np.where(enabled, np.minimum(NOMINAL_LEVEL * runs / safe_run, 4.0 * NOMINAL_LEVEL), 0.0)
+            if valid is not None:
+                flat_z[t] = np.where(valid[t], flat_z[t], 0.0)
 
     stacked = np.stack([np.abs(z), np.abs(drift_z), range_z, flat_z], axis=0)
     sensor_score = stacked.max(axis=0)
@@ -277,9 +309,12 @@ def detection_metrics(
     tp = int(np.sum(flagged & (labels == 1)))
     fp = int(np.sum(flagged & (labels == 0)))
     fn = int(np.sum(~flagged & (labels == 1)))
-    precision = tp / (tp + fp) if tp + fp else 0.0
-    recall = tp / (tp + fn) if tp + fn else 0.0
-    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    # Undefined ratios are None, not 0: a clean log with no detections has no precision to speak of.
+    precision: Optional[float] = tp / (tp + fp) if tp + fp else None
+    recall: Optional[float] = tp / (tp + fn) if tp + fn else None
+    f1: Optional[float] = None
+    if precision is not None and recall is not None:
+        f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
 
     segments = _label_segments(labels)
     delays: List[int] = []
@@ -298,11 +333,13 @@ def detection_metrics(
     auroc: Optional[float] = None
     positives, negatives = int(labels.sum()), int(T - labels.sum())
     if positives and negatives:
-        order = np.argsort(-np.asarray(score, dtype=float), kind="stable")
-        ranked = labels[order]
-        tpr = np.concatenate([[0.0], np.cumsum(ranked) / positives])
-        fpr = np.concatenate([[0.0], np.cumsum(1 - ranked) / negatives])
-        auroc = float(np.sum(np.diff(fpr) * (tpr[1:] + tpr[:-1]) / 2.0))
+        # Rank-sum form with average ranks, so that tied scores count as half right
+        # whatever order the rows happen to come in.
+        values = np.nan_to_num(np.asarray(score, dtype=float), nan=-np.inf)
+        _, inverse, counts = np.unique(values, return_inverse=True, return_counts=True)
+        last = np.cumsum(counts)
+        ranks = (last - (counts - 1) / 2.0)[inverse]
+        auroc = float((ranks[labels == 1].sum() - positives * (positives + 1) / 2.0) / (positives * negatives))
 
     return {
         "labeled_incidents": len(segments),

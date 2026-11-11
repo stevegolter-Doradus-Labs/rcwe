@@ -883,8 +883,12 @@ class TelemetryTable:
             return str(self.timestamps[index])
         return f"step {index}"
 
-    def labels_after(self, steps: int) -> List[str]:
-        """Time labels for the `steps` rows that would follow the last one, in the log's own style."""
+    def labels_after(self, steps: int, row_offset: int = 0) -> List[str]:
+        """
+        Time labels for the `steps` rows that would follow the last one, in the log's own style.
+        `row_offset` is the number of rows that came before this table (when it is the tail of a
+        longer log without a time axis, so that rows are numbered from the log's start).
+        """
         if self.time_seconds is not None and self.sample_interval:
             last, interval = float(self.time_seconds[-1]), self.sample_interval
             return [format_time(last + interval * k, self.time_offset) for k in range(1, steps + 1)]
@@ -894,7 +898,7 @@ class TelemetryTable:
             pace = float(np.median(deltas)) if deltas.size else 1.0
             last = float(self.step_values[-1])
             return [_number_label(last + pace * k) for k in range(1, steps + 1)]
-        return [f"step {self.n_rows + k}" for k in range(steps)]
+        return [f"step {row_offset + self.n_rows + k}" for k in range(steps)]
 
     def column(self, name: str) -> np.ndarray:
         if name in self.sensors:

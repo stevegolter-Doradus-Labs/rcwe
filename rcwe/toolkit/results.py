@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -17,26 +18,54 @@ import numpy as np
 __all__ = ["AnomalyEvent", "DetectionResult", "Forecast", "FitSummary"]
 
 
-def _round(value: Any, digits: int = 6) -> Any:
+def _round(value: Any, digits: int = 7) -> Any:
+    """
+    JSON-friendly copy of `value` with floats rounded to `digits` significant digits
+    (not decimal places: readings of 3e-9 must not all turn into 0.0) and non-finite
+    numbers replaced by None.
+    """
     if value is None:
         return None
     if isinstance(value, (list, tuple)):
         return [_round(v, digits) for v in value]
     if isinstance(value, np.ndarray):
-        return [_round(v, digits) for v in value.tolist()]
+        arr = np.asarray(value, dtype=float)
+        out = arr.copy()
+        ok = np.isfinite(arr) & (arr != 0.0)
+        if ok.any():
+            factor = 10.0 ** (digits - 1 - np.floor(np.log10(np.abs(arr[ok]))))
+            out[ok] = np.round(arr[ok] * factor) / factor
+        cleaned = np.where(np.isfinite(out), out, np.nan).astype(object)
+        cleaned[~np.isfinite(out)] = None
+        return cleaned.tolist()
     if isinstance(value, (float, np.floating)):
-        return None if not np.isfinite(value) else round(float(value), digits)
+        return None if not np.isfinite(value) else float(f"{float(value):.{digits}g}")
     if isinstance(value, (np.integer,)):
         return int(value)
     return value
 
 
 def _fmt(value: float) -> str:
-    """Compact number formatting for prose."""
+    """Compact number formatting for prose: two decimals in the everyday range, whole digits always kept."""
+    value = float(value)
+    if not math.isfinite(value):
+        return "n/a"
     magnitude = abs(value)
-    if magnitude >= 1000 or (0 < magnitude < 0.01):
+    if magnitude >= 1e12 or 0 < magnitude < 0.01:
         return f"{value:.3g}"
-    return f"{value:.2f}".rstrip("0").rstrip(".")
+    if magnitude >= 1e6:
+        return f"{value:.0f}"
+    text = f"{value:.1f}" if magnitude >= 1000 else f"{value:.2f}"
+    return text.rstrip("0").rstrip(".")
+
+
+def _fmt_pair(first: float, second: float) -> List[str]:
+    """Two numbers written so that they can be told apart ("1000012.3 vs 1000007.9", not "1e+06 vs 1e+06")."""
+    a, b = _fmt(first), _fmt(second)
+    if a == b and first != second and math.isfinite(first) and math.isfinite(second):
+        decimals = min(12, max(0, int(math.ceil(-math.log10(abs(first - second)))) + 1))
+        a, b = f"{first:.{decimals}f}", f"{second:.{decimals}f}"
+    return [a, b]
 
 
 def _plural(count: int, word: str) -> str:
@@ -65,6 +94,7 @@ class FitSummary:
     warnings: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
     source: str = ""
+    commands: List[str] = field(default_factory=list)   # controls known ahead of the reading they act on
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -77,6 +107,7 @@ class FitSummary:
             "forecast_skill_by_horizon": {k: _round(v, 4) for k, v in self.forecast_skill.items()},
             "forecast_horizon": self.forecast_horizon,
             "warnings": list(self.warnings), "notes": list(self.notes), "source": self.source,
+            "commands": list(self.commands),
         }
 
     @classmethod
@@ -91,6 +122,7 @@ class FitSummary:
             forecast_skill={k: (float("nan") if v is None else float(v)) for k, v in data.get("forecast_skill_by_horizon", {}).items()},
             forecast_horizon=int(data.get("forecast_horizon", 0)),
             warnings=list(data.get("warnings", [])), notes=list(data.get("notes", [])), source=str(data.get("source", "")),
+            commands=list(data.get("commands", [])),
         )
 
     def summary(self) -> str:
@@ -113,6 +145,8 @@ class FitSummary:
             parts = [f"{h} step{'' if h == '1' else 's'}: {v * 100:+.0f}%" for h, v in self.forecast_skill.items() if np.isfinite(v)]
             if parts:
                 lines.append("Forecast skill vs naive baseline -- " + ", ".join(parts) + ".")
+        if self.commands:
+            lines.append("Commands (the model is told their value for the reading it predicts): " + ", ".join(self.commands) + ".")
         for warning in self.warnings:
             lines.append(f"Warning: {warning}")
         return "\n".join(lines)
@@ -136,6 +170,7 @@ class AnomalyEvent:
     sensors: List[Dict[str, Any]] = field(default_factory=list)
     description: str = ""              # full sentence, including when it happened
     what: str = ""                     # the same finding without the time span (for tables)
+    control_changes: List[Dict[str, Any]] = field(default_factory=list)   # control inputs that changed as it began
 
     @property
     def duration(self) -> int:
@@ -153,6 +188,7 @@ class AnomalyEvent:
             "severity": self.severity, "kind": self.kind,
             "sensors": [{k: _round(v, 5) for k, v in s.items()} for s in self.sensors],
             "description": self.description, "what": self.what,
+            "control_changes": [{k: _round(v, 6) for k, v in c.items()} for c in self.control_changes],
         }
 
 
@@ -369,19 +405,38 @@ class DetectionResult:
         event_of = np.zeros(self.n_rows, dtype=int)
         for event in self.events:
             event_of[event.start:event.end + 1] = event.index
+        # Column names stay unique whatever the sensors are called (a sensor named "event", or
+        # one named "flow_score" next to "flow").
+        taken = set(self.sensors)
+        general = {}
+        for key in ("time", "anomaly_score", "is_anomaly", "event", "top_sensor"):
+            general[key] = key if key not in taken else f"rcwe_{key}"
+            taken.add(general[key])
+        derived = []
+        for name in self.sensors:
+            pair = []
+            for suffix in ("expected", "score"):
+                column = f"{name}_{suffix}"
+                while column in taken:
+                    column += "_"
+                taken.add(column)
+                pair.append(column)
+            derived.append(pair)
+        values, expected, per_sensor = _round(self.values), _round(self.expected), _round(self.sensor_scores, 4)
+        overall = _round(self.scores, 4)
         rows = []
         for t in range(self.n_rows):
             row: Dict[str, Any] = {
-                "time": self.timestamps[t],
-                "anomaly_score": _round(self.scores[t], 4),
-                "is_anomaly": int(mask[t]),
-                "event": int(event_of[t]) if event_of[t] else "",
-                "top_sensor": self.sensors[int(np.argmax(self.sensor_scores[t]))] if mask[t] else "",
+                general["time"]: self.timestamps[t],
+                general["anomaly_score"]: overall[t],
+                general["is_anomaly"]: int(mask[t]),
+                general["event"]: int(event_of[t]) if event_of[t] else "",
+                general["top_sensor"]: self.sensors[int(np.argmax(self.sensor_scores[t]))] if mask[t] else "",
             }
             for i, name in enumerate(self.sensors):
-                row[name] = _round(self.values[t, i])
-                row[f"{name}_expected"] = _round(self.expected[t, i])
-                row[f"{name}_score"] = _round(self.sensor_scores[t, i], 4)
+                row[name] = values[t][i]
+                row[derived[i][0]] = expected[t][i]
+                row[derived[i][1]] = per_sensor[t][i]
             rows.append(row)
         return rows
 

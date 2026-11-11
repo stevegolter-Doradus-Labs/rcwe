@@ -143,6 +143,14 @@ def _schema_kwargs(args: argparse.Namespace) -> Dict[str, Any]:
     }
 
 
+def _commands(args: argparse.Namespace) -> Any:
+    """--commands as `fit` wants it: None (decide by name), "all", "none", or a list of column names."""
+    value = getattr(args, "commands", None)
+    if value is None or value.strip().lower() in ("all", "none"):
+        return value
+    return _split(value)
+
+
 def _model_kwargs(args: argparse.Namespace) -> Dict[str, Any]:
     kwargs: Dict[str, Any] = {"seed": args.seed, "device": args.device}
     if getattr(args, "steps", None):
@@ -161,6 +169,9 @@ def _add_schema_options(parser: argparse.ArgumentParser) -> None:
 def _add_model_options(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group("training")
     group.add_argument("--steps", type=_number(int, 1), metavar="N", help="maximum training steps (default 400; stops early when converged)")
+    group.add_argument("--commands", metavar="X,Y|all|none",
+                       help="control columns that are commands (setpoints, schedules: set independently of the sensors); "
+                            "the model learns how the sensors respond to them (default: columns named like setpoints)")
     group.add_argument("--seed", type=int, default=0, help="random seed (default 0)")
     group.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"], help="where to train (default: auto)")
 
@@ -306,7 +317,7 @@ def cmd_fit(args: argparse.Namespace) -> int:
 
     progress = _Progress(not args.quiet)
     out = _file_target(args.output or str(Path(args.file).with_suffix(".rcwe").name), "-o")
-    model = TelemetryModel(**_model_kwargs(args)).fit(args.file, progress=progress, **_schema_kwargs(args))
+    model = TelemetryModel(**_model_kwargs(args)).fit(args.file, progress=progress, commands=_commands(args), **_schema_kwargs(args))
     progress.close()
     print(model.summary())
     for note in model.fit_summary_.notes:
@@ -366,7 +377,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         train_source = table.slice(0, rows)
         share = f"the first {rows:,} of {table.n_rows:,} rows"
         print(f"Learning normal behaviour from {share} of {args.file} ...")
-    model = TelemetryModel(**_model_kwargs(args)).fit(train_source, progress=progress)
+    model = TelemetryModel(**_model_kwargs(args)).fit(train_source, progress=progress, commands=_commands(args))
     progress.close()
     print(model.summary())
     for note in model.fit_summary_.notes:
@@ -525,8 +536,10 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 if event is None:
                     alerts += 1
                     lead = step.sensors[0]
-                    print(f"  ANOMALY   {step.time}  score {step.score:.1f}  {lead['name']}: {lead['detail']}")
-                    emit("anomaly", {"time": step.time, "score": round(step.score, 3), "sensors": step.sensors})
+                    moved = f"; coincides with a change in {', '.join(step.controls_changed)}" if step.controls_changed else ""
+                    print(f"  ANOMALY   {step.time}  score {step.score:.1f}  {lead['name']}: {lead['detail']}{moved}")
+                    emit("anomaly", {"time": step.time, "score": round(step.score, 3), "sensors": step.sensors,
+                                     "controls_changed": step.controls_changed})
                     event = {"rows": 0, "peak": 0.0, "last_time": step.time}
                 event["rows"] += 1
                 event["peak"] = max(event["peak"], step.score)

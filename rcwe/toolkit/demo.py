@@ -34,6 +34,7 @@ class DemoDataset:
 
     table: TelemetryTable
     events: List[Dict[str, Any]] = field(default_factory=list)
+    operator_steps: List[Dict[str, Any]] = field(default_factory=list)   # setpoint changes, when asked for
 
 
 def make_pump_station(
@@ -43,12 +44,18 @@ def make_pump_station(
     seed: int = 7,
     start: str = "2026-03-02T00:00:00Z",
     interval_minutes: float = 5.0,
+    operator_steps: int = 0,
 ) -> DemoDataset:
     """
     Simulate `rows` samples of pump-station telemetry.
 
     With `faults=True`, five labelled faults are injected after row `fault_start`
     (default: 70% of the way through), leaving the first part clean for training.
+
+    `operator_steps` adds that many abrupt setpoint changes to each control (the valve and
+    the pump speed are moved by hand and held for a few hours), spread over the whole log.
+    The plant responds as it should, so these are not faults: they are what a model has to
+    learn to expect when it is told the controls are commands.
     """
     if rows < 200:
         raise ValueError("rows must be at least 200 for the pump-station demo.")
@@ -63,6 +70,18 @@ def make_pump_station(
 
     valve = 0.55 + 0.15 * np.sin(day - 0.6) + 0.05 * np.sin(2.0 * np.pi * t / 37.0)
     speed = 0.70 + 0.10 * np.sin(day + 0.3) + 0.03 * np.cumsum(rng.standard_normal(rows)) / np.sqrt(t + 1.0)
+
+    moves: List[Dict[str, Any]] = []
+    if operator_steps:
+        by_hand = np.random.default_rng(seed + 1000)     # its own stream: the default dataset stays exactly as it was
+        for control, name, size in ((valve, "act_valve_open", 0.12), (speed, "act_pump_speed", 0.06)):
+            for _ in range(int(operator_steps)):
+                a = int(by_hand.integers(burn_in + 20, rows - 140))
+                width = int(by_hand.integers(40, 120))
+                delta = float(by_hand.choice([-1.0, 1.0]) * by_hand.uniform(0.5, 1.0) * size)
+                control[a:a + width] += delta
+                moves.append({"control": name, "start": a - burn_in, "end": a + width - 1 - burn_in, "delta": round(delta, 4)})
+        moves.sort(key=lambda move: move["start"])
 
     wander = np.zeros(rows)
     shocks = rng.standard_normal(rows) * 0.03
@@ -159,7 +178,7 @@ def make_pump_station(
         label_column="anomaly" if faults else None,
         source="demo:pump_station",
     )
-    return DemoDataset(table=table, events=events)
+    return DemoDataset(table=table, events=events, operator_steps=moves)
 
 
 def write_demo_files(out_dir: Union[str, Path] = "rcwe_demo", seed: int = 7) -> Dict[str, str]:
