@@ -45,8 +45,9 @@ or five lines of Python take a log file to explained anomalies, forecasts and a 
   figure is now measured on each tick by `LiveMissionEngine`, which runs RCWE next to a frozen
   Transformer on the sandbox; the buttons act on that simulation; dropping a telemetry file runs a
   real analysis.
-- **`rcwe-predict`** takes its flagged sensors from the toolkit's attribution. The previous logic
-  named the wrong sensors on the bundled sample files.
+- **`rcwe-predict` and `rcwe bench realworld`** take their flagged sensors from the toolkit's
+  attribution. The previous rule (largest change over the last five rows) named none of the
+  injected sensors on the three regime-shift logs.
 - **Nothing is written into the working directory any more.** Generated files go to
   `./rcwe_output/` (or `$RCWE_OUTPUT_DIR`). Reports that were tracked in the repository root moved
   to `docs/reference_results/`, sample inputs to `examples/data/`.
