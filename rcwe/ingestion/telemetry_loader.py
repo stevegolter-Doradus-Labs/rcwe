@@ -147,6 +147,8 @@ class TelemetryIngestionLoader:
 
             if act_cols:
                 a_row = [float(r[c]) for c in act_cols]
+                # Zero-pad so every row is exactly d_action wide (d_action = max(len(act_cols), 4)).
+                a_row += [0.0] * (d_action - len(a_row))
             else:
                 a_row = [0.0] * d_action
             act_list.append(a_row)

@@ -1014,7 +1014,7 @@ class MissionControlEngine:
             "last_action": self.last_action,
             "psi_kb": 8.0,
             "swarm_kb": 32.0,
-            "atp": round(float(self.rcwe.plastic_readout.atp_energy.item()), 4),
+            "atp": round(self.rcwe.mean_atp, 4),
         }
 
     @staticmethod
