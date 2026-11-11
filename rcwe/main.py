@@ -17,11 +17,12 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
 import time
 import webbrowser
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 EXIT_OK, EXIT_ERROR, EXIT_ANOMALY = 0, 1, 2
 
@@ -129,8 +130,12 @@ def _add_detect_options(parser: argparse.ArgumentParser) -> None:
 
 
 def _print_events_hint(result: Any) -> None:
-    if result.n_events:
-        print("\nSensors most involved: " + ", ".join(r["name"] for r in result.sensor_ranking()[:3] if r["anomalous_steps"]))
+    """Where the deviations lasted longest. Each event above already names the sensor it started on."""
+    ranked = sorted((r for r in result.sensor_ranking() if r["anomalous_steps"]),
+                    key=lambda r: (r["anomalous_steps"], r["involvement"]), reverse=True)[:3]
+    if ranked:
+        print("\nMost time above threshold: "
+              + ", ".join(f"{r['name']} ({r['anomalous_steps']:,} step{'' if r['anomalous_steps'] == 1 else 's'})" for r in ranked))
 
 
 def _detect_and_export(model: Any, source: Any, args: argparse.Namespace, out_dir: Optional[Path], progress: _Progress,
@@ -319,33 +324,66 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+_DELIMITERS = (",", ";", "\t", "|")
+
+
 def _follow_csv(path: Path, interval: float, once: bool) -> Iterator[Optional[Dict[str, str]]]:
-    """Yield each row of a growing CSV as a dict; yield None once the existing content is exhausted."""
-    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+    """
+    Yield each row of a growing delimited file as a dict, and None once when the content that
+    was already there has been read.
+
+    Works like `tail -F`: a row is delivered when its line is complete, and if the file is
+    truncated or replaced (log rotation) reading restarts from the top of the new content.
+    The delimiter is taken from the header line (comma, semicolon, tab or pipe).
+    """
+    def identity(open_file: Any) -> Tuple[int, int]:
+        info = os.fstat(open_file.fileno())
+        return info.st_dev, info.st_ino
+
+    handle = path.open("rb")
+    try:
+        ident = identity(handle)
         header: Optional[List[str]] = None
-        pending = ""
+        delimiter = ","
+        pending = b""
         caught_up = False
         while True:
-            line = handle.readline()
-            if not line:
-                if not caught_up:
-                    caught_up = True
-                    yield None
-                if once:
-                    return
-                time.sleep(interval)
-                continue
-            if not line.endswith("\n"):
-                pending += line                      # a row that is still being written
-                continue
-            line, pending = pending + line, ""
-            if not line.strip():
-                continue
-            cells = next(csv.reader([line]))
+            chunk = handle.readline()
+            if chunk.endswith(b"\n"):
+                line, pending = pending + chunk, b""
+            else:
+                pending += chunk                     # nothing new, or a row that is still being written
+                if once and pending:
+                    line, pending = pending, b""     # a finished file whose last line has no newline
+                else:
+                    if not caught_up:
+                        caught_up = True
+                        yield None
+                    if once:
+                        return
+                    time.sleep(interval)
+                    try:
+                        info = os.stat(path)
+                    except OSError:
+                        continue                     # mid-rotation: the file will be back
+                    if (info.st_dev, info.st_ino) != ident or info.st_size < handle.tell():
+                        handle.close()
+                        handle = path.open("rb")
+                        ident = identity(handle)
+                        header, pending = None, b""
+                    continue
+            text = line.decode("utf-8", errors="replace").rstrip("\r\n")
             if header is None:
-                header = [c.strip() for c in cells]
+                text = text.lstrip("\ufeff")
+            if not text.strip():
                 continue
-            yield dict(zip(header, cells))
+            if header is None:
+                delimiter = max(_DELIMITERS, key=text.count)
+                header = [cell.strip() for cell in next(csv.reader([text], delimiter=delimiter))]
+                continue
+            yield dict(zip(header, next(csv.reader([text], delimiter=delimiter))))
+    finally:
+        handle.close()
 
 
 def cmd_watch(args: argparse.Namespace) -> int:
@@ -363,6 +401,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
           f"{'adaptive' if args.adapt else 'reference'} mode). Press Ctrl+C to stop.")
 
     rows = alerts = quiet = 0
+    checked = False
     event: Optional[Dict[str, Any]] = None
 
     def emit(kind: str, payload: Dict[str, Any]) -> None:
@@ -384,6 +423,14 @@ def cmd_watch(args: argparse.Namespace) -> int:
                     print(f"  primed on {rows:,} existing row(s); waiting for new ones ...")
                     live = True
                 continue
+            if not checked:
+                checked = True
+                absent = [name for name in model.sensors if name not in raw]
+                if absent:
+                    raise DataError(
+                        f"{path} has no column named {', '.join(repr(name) for name in absent)}, which this model "
+                        f"was trained on. Columns found: {', '.join(key for key in raw if key) or '(none)'}."
+                    )
             reading: Dict[str, Any] = {}
             for name in model.sensors + model.controls:
                 value = _to_float(raw.get(name))
@@ -395,9 +442,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 print(f"  skipped   row {rows + 1}: {exc}")
                 continue
             rows += 1
-            if not live:
-                continue
-            if step.alert or (step.is_anomaly and event is not None):
+            if live and (step.alert or (step.is_anomaly and event is not None)):
                 quiet = 0
                 if event is None:
                     alerts += 1

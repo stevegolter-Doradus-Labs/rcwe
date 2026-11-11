@@ -1,12 +1,11 @@
 """The `rcwe` command: every subcommand an end user touches, driven through `main(argv)`."""
 import json
-import os
 from pathlib import Path
 
 import pytest
 
 from rcwe.main import EXIT_ANOMALY, EXIT_ERROR, EXIT_OK, build_parser, main
-from rcwe.toolkit import TelemetryModel, load_table
+from rcwe.toolkit import DataError, TelemetryModel, load_table
 from rcwe.toolkit.demo import make_pump_station
 
 
@@ -116,6 +115,56 @@ def test_watch_once_raises_debounced_alerts(workspace, capsys):
     assert stuck and stuck[0]["sensors"][0]["name"] == "vibration_mm_s"
 
 
+def test_watch_reads_semicolon_files_and_an_unterminated_last_row(workspace, capsys):
+    rows = Path(workspace["incident"]).read_text().splitlines()[:201]          # header + 200 rows
+    european = workspace["root"] / "european.csv"
+    european.write_text("\n".join(line.replace(",", ";") for line in rows))    # no newline after the last row
+    assert main(["watch", str(european), "-m", workspace["model"], "--once"]) == EXIT_OK
+    assert "Processed 200 row(s)" in capsys.readouterr().out
+
+
+def test_watch_explains_a_file_that_lacks_the_models_sensors(workspace, capsys):
+    other = workspace["root"] / "other_plant.csv"
+    other.write_text("timestamp,flow_m3h,speed\n2026-01-01T00:00:00Z,1.0,2.0\n2026-01-01T00:05:00Z,1.1,2.1\n")
+    assert main(["watch", str(other), "-m", workspace["model"], "--once"]) == EXIT_ERROR
+    err = capsys.readouterr().err
+    assert "no column named 'pressure_bar'" in err and "Columns found: timestamp, flow_m3h, speed" in err
+
+
+def test_watch_max_rows_also_counts_the_rows_used_to_warm_up(workspace, capsys):
+    import threading
+
+    codes = []
+    # Without --once the command follows the file forever, so only --max-rows can end it.
+    worker = threading.Thread(
+        target=lambda: codes.append(main(["watch", workspace["incident"], "-m", workspace["model"], "--max-rows", "40"])),
+        daemon=True,
+    )
+    worker.start()
+    worker.join(timeout=60)
+    assert codes == [EXIT_OK]
+    assert "Processed 40 row(s); 0 alert(s)." in capsys.readouterr().out
+
+
+def test_follow_csv_waits_for_complete_rows_and_survives_rotation(tmp_path):
+    from rcwe.main import _follow_csv
+
+    log = tmp_path / "live.csv"
+    log.write_text("a,b\n1,2\n")
+    rows = _follow_csv(log, interval=0.01, once=False)
+    assert next(rows) == {"a": "1", "b": "2"}
+    assert next(rows) is None                                  # caught up with what was already there
+    with log.open("a") as handle:
+        handle.write("3,4")                                    # a row that is still being written ...
+        handle.flush()
+        handle.write("\n5,6\n")                                # ... and is then completed
+    assert next(rows) == {"a": "3", "b": "4"}
+    assert next(rows) == {"a": "5", "b": "6"}
+    log.write_text("a;b\n7;8\n")                               # rotated: shorter file, different delimiter
+    assert next(rows) == {"a": "7", "b": "8"}
+    rows.close()
+
+
 def test_demo_data_and_friendly_errors(tmp_path, capsys):
     assert main(["demo-data", "--out", str(tmp_path / "demo")]) == EXIT_OK
     assert {p.name for p in (tmp_path / "demo").iterdir()} == {"pump_station_normal.csv", "pump_station_incident.csv"}
@@ -128,7 +177,7 @@ def test_demo_data_and_friendly_errors(tmp_path, capsys):
     (tmp_path / "words.csv").write_text("name,city\nann,oslo\nbob,rome\n")
     assert main(["fit", str(tmp_path / "words.csv")]) == EXIT_ERROR
     assert "No numeric sensor columns" in capsys.readouterr().err
-    with pytest.raises(Exception):
+    with pytest.raises(DataError):
         main(["--debug", "inspect", str(tmp_path / "missing.csv")])       # --debug re-raises for a traceback
 
 
