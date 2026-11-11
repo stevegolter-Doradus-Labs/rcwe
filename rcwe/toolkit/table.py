@@ -70,6 +70,7 @@ _THOUSANDS_COMMA = re.compile(r"^[+-]?[1-9]\d{0,2}(,\d{3})+$")
 _THOUSANDS_DOT = re.compile(r"^[+-]?[1-9]\d{0,2}(\.\d{3})+$")
 _CLOCK = re.compile(r"^\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?(\s?[AaPp][Mm])?$")
 _DELIMITERS = (",", ";", "\t", "|")
+MAX_COLUMNS = 10000
 
 # One entry per way of writing a calendar date. A column is read with exactly one of them,
 # because "01/03/2026" cannot be told apart from its day/month twin one cell at a time.
@@ -485,13 +486,14 @@ def _dedupe(names: Sequence[Any]) -> List[str]:
     """Usable, unique column names: blanks become column_<i>, repeats get _2, _3, ..."""
     cleaned = []
     for i, raw in enumerate(names):
-        name = str(raw).strip().lstrip("﻿").strip() if raw is not None else ""
+        name = str(raw).strip().lstrip("\ufeff").strip() if raw is not None else ""
         cleaned.append(name or f"column_{i}")
     taken = set()
+    given = set(cleaned)
     out: List[str] = []
     for name in cleaned:
         unique, n = name, 1
-        while unique in taken or (n > 1 and unique in cleaned):
+        while unique in taken or (n > 1 and unique in given):
             n += 1
             unique = f"{name}_{n}"
         taken.add(unique)
@@ -500,14 +502,20 @@ def _dedupe(names: Sequence[Any]) -> List[str]:
 
 
 def _rows_to_columns(rows: Sequence[Dict[str, Any]]) -> Dict[str, List[Any]]:
-    names: List[str] = []
+    names: Dict[Any, None] = {}                       # insertion-ordered, with constant-time lookup
     for row in rows:
         if not isinstance(row, dict):
             raise DataError("Expected a list of row objects (one {column: value} mapping per time step).")
         for key in row:
             if key not in names:
-                names.append(key)
+                names[key] = None
     return {str(name): [row.get(name) for row in rows] for name in names}
+
+
+def _lines(text: str) -> List[str]:
+    """Lines of a text file. Only CR and LF end a line: `str.splitlines` would also break on
+    U+2028 and other separators that may legitimately sit inside a field."""
+    return text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
 
 
 def _width(cells: Sequence[str]) -> int:
@@ -569,8 +577,8 @@ def _sniff_delimiter(lines: Sequence[str]) -> Tuple[Optional[str], bool]:
 
 
 def _read_delimited(text: str, notes: List[str], hints: Dict[str, Any]) -> Dict[str, List[Any]]:
-    text = text.lstrip("﻿")
-    lines = [ln for ln in text.splitlines() if ln.strip()]
+    text = text.lstrip("\ufeff")
+    lines = [ln for ln in _lines(text) if ln.strip()]
     # Comment lines ("# exported by ...") are a common habit in logger exports, before and after the header.
     lead: List[str] = []
     while lines and lines[0].lstrip().startswith("#"):
@@ -655,7 +663,7 @@ def _read_json_payload(payload: Any) -> Dict[str, List[Any]]:
 def _json_lines(text: str) -> Optional[List[Any]]:
     """Rows of a JSON-lines document (one object per line), or None when it is not one."""
     rows = []
-    for line in text.splitlines():
+    for line in _lines(text):
         if not line.strip():
             continue
         try:
@@ -674,7 +682,7 @@ def _read_text(text: str, kind: str, name: str, notes: List[str], hints: Dict[st
         raise DataError(f"{name} is empty.")
     if kind in (".jsonl", ".ndjson"):
         rows = []
-        for n, line in enumerate(text.splitlines(), 1):
+        for n, line in enumerate(_lines(text), 1):
             if line.strip():
                 try:
                     rows.append(json.loads(line))
@@ -1143,6 +1151,9 @@ def _build(
 ) -> TelemetryTable:
     if not columns:
         raise DataError("No columns found in the data.")
+    if len(columns) > MAX_COLUMNS:
+        raise DataError(f"The data has {len(columns):,} columns; RCWE reads up to {MAX_COLUMNS:,}. "
+                        "Check the delimiter, or keep only the columns you need.")
     lengths = {len(v) for v in columns.values()}
     if len(lengths) != 1:
         raise DataError("Columns have different lengths; every column needs one value per time step.")
@@ -1263,10 +1274,12 @@ def _build(
             partial = [n for n, low in lowered.items() if n not in exact and low not in STEP_NAMES
                        and set(re.findall(r"[a-z]+", low)) & TIME_TOKENS]
             counters = [n for n, low in lowered.items() if low in STEP_NAMES and n not in exact]
-            other_text = [n for n in text_cols if n in lowered and n not in exact and n not in partial and n not in counters]
+            named = set(exact) | set(partial) | set(counters)
+            textual = set(text_cols)
+            other_text = [n for n in text_cols if n in lowered and n not in named]
             for cand in exact + partial + counters + other_text:
                 done = False
-                if cand in text_cols:
+                if cand in textual:
                     done = clock_from_text(cand, columns[cand])
                 elif cand in numeric:
                     done = cand not in counters and clock_from_numbers(cand)

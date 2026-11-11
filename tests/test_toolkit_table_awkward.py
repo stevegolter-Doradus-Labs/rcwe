@@ -221,3 +221,25 @@ def test_dataframe_indexes_and_nullable_columns_are_kept():
     nullable = pd.DataFrame({"v": np.arange(8.0), "n": pd.array([1, 2, None, 4, None, 6, 7, 8], dtype="Int64")})
     table = load_table(nullable)
     assert table.sensors == ["v", "n"] and int(table.missing.sum()) == 2 and table.values[2, 1] == 3.0
+
+
+def test_delimiter_bombs_and_unicode_line_separators():
+    with pytest.raises(DataError, match="columns; RCWE reads up to"):
+        load_table(("," * 30000 + "\n") * 3)
+    odd = load_table("time,line sep,temp\n2026-03-01 10:00,1,21.5\n2026-03-01 10:01,2,21.6\n2026-03-01 10:02,4,21.7\n")
+    assert len(odd.sensors) == 2 and odd.sensors[1] == "temp"            # U+2028 inside a name is not a line break
+
+
+def test_exported_headers_cannot_become_spreadsheet_formulas(tmp_path):
+    import csv
+
+    from rcwe.toolkit import TelemetryModel
+
+    rows = [{"=cmd|' /C calc'!A0": float(i % 7), "@sum": float((i * 3) % 5), "ok": float(i % 4)} for i in range(120)]
+    model = TelemetryModel(max_steps=20, device="cpu").fit(rows)
+    model.detect(rows).to_csv(tmp_path / "scores.csv")
+    model.forecast(3).to_csv(tmp_path / "forecast.csv")
+    for name in ("scores.csv", "forecast.csv"):
+        with open(tmp_path / name, newline="", encoding="utf-8") as handle:
+            header = next(csv.reader(handle))
+        assert not [cell for cell in header if cell[:1] in ("=", "@", "+", "-")], name

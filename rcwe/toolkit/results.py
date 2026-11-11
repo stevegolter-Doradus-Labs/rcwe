@@ -68,6 +68,17 @@ def _fmt_pair(first: float, second: float) -> List[str]:
     return [a, b]
 
 
+def _cell(text: Any) -> Any:
+    """
+    Text for a CSV cell. A spreadsheet treats a cell that begins with = + - or @ as a formula;
+    a column name taken from someone else's file must not become one, so it gets a leading
+    apostrophe (which the spreadsheet does not show).
+    """
+    if isinstance(text, str) and text[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + text
+    return text
+
+
 def _plural(count: int, word: str) -> str:
     return f"{count} {word}{'' if count == 1 else 's'}"
 
@@ -232,9 +243,9 @@ class Forecast:
         out = Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)
         with out.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
-            writer.writeheader()
-            writer.writerows(rows)
+            writer = csv.writer(handle)
+            writer.writerow([_cell(name) for name in rows[0]])
+            writer.writerows([list(row.values()) for row in rows])
         return str(out.resolve())
 
     def to_dict(self) -> Dict[str, Any]:
@@ -445,9 +456,10 @@ class DetectionResult:
         out = Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)
         with out.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()) if rows else [])
-            writer.writeheader()
-            writer.writerows(rows)
+            writer = csv.writer(handle)
+            if rows:
+                writer.writerow([_cell(name) for name in rows[0]])
+                writer.writerows([[_cell(value) for value in row.values()] for row in rows])
         return str(out.resolve())
 
     def to_html(self, path: Union[str, Path], title: Optional[str] = None) -> str:

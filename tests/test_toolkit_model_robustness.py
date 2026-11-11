@@ -318,3 +318,12 @@ def test_detection_metrics_handle_ties_and_empty_cases():
     assert detection_metrics(early, scores, [])["auroc"] == pytest.approx(detection_metrics(late, scores, [])["auroc"])
     quiet = detection_metrics(np.zeros(50, dtype=int), np.zeros(50), [])
     assert quiet["point_precision"] is None and quiet["point_recall"] is None and quiet["point_f1"] is None
+
+
+def test_a_counter_that_ticks_evenly_is_flagged_when_it_skips():
+    rng = np.random.default_rng(0)
+    rows = [{"sequence": 1000 + i + (7 if i >= 300 else 0), "temp": 20 + math.sin(i / 9) + rng.normal(0, 0.05)} for i in range(400)]
+    model = TelemetryModel(max_steps=60, device="cpu").fit(rows[:240])
+    assert "exactly the same amount" in " ".join(model.fit_summary_.notes)
+    skipped = [e for e in model.detect(rows).events if e.top_sensor == "sequence"]
+    assert len(skipped) == 1 and skipped[0].start == 300 and skipped[0].severity == "critical"

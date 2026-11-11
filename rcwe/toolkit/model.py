@@ -564,8 +564,14 @@ class TelemetryModel:
         self._active = (~constant).astype(float)
         steps_c = _clipped(np.diff((train_c - self._mean) / self._std, axis=0))
         vs = steps_c.std(axis=0) if steps_c.shape[0] else np.zeros(n)
-        self._vs = np.where(vs < 1e-9, 1.0, vs)
         self._vmean = steps_c.mean(axis=0) if steps_c.shape[0] else np.zeros(n)   # the usual per-step change (non-zero for counters and trends)
+        # A counter that moved by exactly the same amount in every row has no spread to measure a
+        # surprise against. Like a constant sensor, it gets a scale on which any other step is enormous.
+        steady = (vs < 1e-9) & ~constant
+        self._vs = np.where(steady, np.maximum(1e-6 * np.abs(self._vmean), 1e-9), np.where(vs < 1e-9, 1.0, vs))
+        if steady.any():
+            notes.append("Sensor(s) that changed by exactly the same amount in every training row (any other step will be flagged): "
+                         + ", ".join(s for s, c in zip(self.sensors, steady) if c) + ".")
         if m:
             ctrl_c = _clipped(ctrl[:n_tr])
             self._cmean = ctrl_c.mean(axis=0)
@@ -627,6 +633,7 @@ class TelemetryModel:
         p_hat_next, _ = self._predict_frozen(x[:-1], a[:-1])          # prediction of p at rows 1..T-1
         target = p[1:]
         real = ~(missing[1:] | missing[:-1])                          # transitions between two real readings
+        real[0] = False                                               # row 0 has no velocity yet: row 1 is predicted from a guess
         held_out = slice(0, T - 1) if n_val == 0 else slice(n_tr - 1, T - 1)
         ph, tg, ok = p_hat_next[held_out], np.clip(target[held_out], -_TARGET_CLIP, _TARGET_CLIP), real[held_out]
         num, den = (ph * tg * ok).sum(axis=0), (ph * ph * ok).sum(axis=0)
@@ -667,9 +674,15 @@ class TelemetryModel:
             notes.append("Sensor(s) with only a few distinct values (status or mode flags): a switch that the log "
                          "shows at least three times is treated as normal: " + ", ".join(flags) + ".")
         lam = _EWMA_LAMBDA
-        charted = np.clip(np.nan_to_num(resid_all[held_out], nan=0.0), -_TARGET_CLIP * sigma, _TARGET_CLIP * sigma)
-        ewma_sigma = np.maximum(robust_sigma(ewma(charted, lam), floor=floor * math.sqrt(lam / (2 - lam))),
-                                sigma * math.sqrt(lam / (2 - lam)))
+        # The drift chart gets the same three-way treatment: a model that is slightly but
+        # systematically off in some part of a cycle must not ring it all through that part.
+        charted = ewma(np.clip(np.nan_to_num(resid_all, nan=0.0), -_TARGET_CLIP * sigma, _TARGET_CLIP * sigma), lam)
+        charted[:2] = 0.0                                             # the first rows are not scored either
+        slow = floor * math.sqrt(lam / (2 - lam))
+        chart_mad_held, chart_tail_held = robust_sigma(charted[held_out], floor=slow, parts=True)
+        chart_mad_all, chart_tail_all = robust_sigma(charted, floor=slow, parts=True)
+        ewma_sigma = np.maximum.reduce([chart_mad_held, chart_tail_held, chart_tail_all, 0.5 * chart_mad_all,
+                                        sigma * math.sqrt(lam / (2 - lam))])
         if n_val == 0:
             sigma, ewma_sigma = sigma * 1.5, ewma_sigma * 1.5
 
@@ -949,10 +962,15 @@ class TelemetryModel:
             p_hat = np.vstack([np.zeros((1, n)), p_next])
 
         valid = ~missing
-        valid[0] = False                                   # the first row has nothing to be compared with
         # After a gap of g readings there were g + 1 steps in which to drift: allow for that.
         residual = np.clip((p - self._gain * p_hat) / np.sqrt(gap + 1.0), -_Z_CAP, _Z_CAP)
-        scored = score_residuals(residual, level=qn, delta=dq, cal=self._cal, valid=valid, range_check=use_range)
+        # The first row has nothing to be compared with, and the second is predicted from a state
+        # whose velocity had to be guessed: neither can surprise. (Range and stuck-sensor checks,
+        # which need no prediction, apply from the first row.)
+        residual[:2] = 0.0
+        moved = dq.copy()
+        moved[0] = np.nan                                  # no previous reading: not "unchanged" either
+        scored = score_residuals(residual, level=qn, delta=moved, cal=self._cal, valid=valid, range_check=use_range)
         sensor_scores = np.minimum(scored.sensor_score, _Z_CAP)
         scores = np.minimum(scored.score, _Z_CAP)
 
@@ -1504,9 +1522,12 @@ class StreamMonitor:
             un, du, action = np.zeros(0), np.zeros(0), np.zeros(1)
         p_hat = self._advance(model._states(qn, p), None if first else action)
 
-        valid = ~missing & (not first)
+        valid = ~missing
         residual = np.clip((p - model._gain * p_hat) / np.sqrt(gap + 1.0), -_Z_CAP, _Z_CAP)[None, :]
-        scored = score_residuals(residual, level=qn[None, :], delta=dq[None, :], cal=model._cal,
+        if self.index < 2:
+            residual[:] = 0.0                                 # as in `detect`: the first two rows cannot surprise
+        moved = np.full(n, np.nan) if first else dq           # no previous reading: not "unchanged" either
+        scored = score_residuals(residual, level=qn[None, :], delta=moved[None, :], cal=model._cal,
                                  state=self._score_state, valid=valid[None, :], range_check=not self.adapt)
         self._score_state = scored.state
         sensor_score = np.minimum(scored.sensor_score[0], _Z_CAP)
