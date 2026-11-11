@@ -135,6 +135,14 @@ def _parse_datetime(text: str, fmt_hint: Optional[str] = None) -> Tuple[Optional
     return None, fmt_hint
 
 
+def _stamp_text(value: Any) -> str:
+    """How a timestamp cell is shown: the user's own text, or compact ISO-8601 for datetime objects."""
+    if hasattr(value, "isoformat"):
+        text = str(value.isoformat())
+        return text[:-6] + "Z" if text.endswith("+00:00") else text
+    return str(value).strip()
+
+
 def format_time(seconds: float) -> str:
     """Compact ISO-8601 UTC string for an epoch-seconds value."""
     dt = datetime.fromtimestamp(float(seconds), tz=timezone.utc)
@@ -316,12 +324,12 @@ def _frame_to_columns(frame: Any) -> Dict[str, List[Any]]:
     columns: Dict[str, List[Any]] = {}
     index = getattr(frame, "index", None)
     if index is not None and type(index).__name__ == "DatetimeIndex":
-        columns[str(getattr(index, "name", None) or "timestamp")] = [str(v) for v in index]
+        columns[str(getattr(index, "name", None) or "timestamp")] = [_stamp_text(v) for v in index]
     names = _dedupe(list(frame.columns))
     for name, original in zip(names, list(frame.columns)):
         series = frame[original]
         values = series.tolist() if hasattr(series, "tolist") else list(series)
-        columns[name] = [v.isoformat() if hasattr(v, "isoformat") else v for v in values]
+        columns[name] = [_stamp_text(v) if hasattr(v, "isoformat") else v for v in values]
     return columns
 
 
@@ -609,7 +617,10 @@ def load_table(
         if failures > 0.1 * len(cells):
             return False
         arr = _fill_gaps(np.array(secs, dtype=float))
-        timestamps = [str(c).strip() if c is not None else "" for c in cells]
+        # Rows keep the user's own timestamp text; a row whose timestamp could not be read is
+        # labelled with the time interpolated for it rather than left blank.
+        timestamps = [format_time(filled) if math.isnan(parsed) else _stamp_text(c)
+                      for c, parsed, filled in zip(cells, secs, arr)]
         time_seconds = arr
         if failures:
             notes.append(f"'{col}': {failures} unparseable timestamp(s) were interpolated.")

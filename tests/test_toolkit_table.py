@@ -99,3 +99,45 @@ def test_unusable_input_gives_actionable_errors(bad, fragment):
 def test_misspelled_column_suggests_the_right_one():
     with pytest.raises(DataError, match="Did you mean 'x'"):
         load_table({"x": [1, 2, 3]}, sensors=["X"])
+
+
+def test_datetime_objects_and_unreadable_timestamps_get_consistent_labels():
+    from datetime import datetime, timedelta, timezone
+
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    rows = [{"when": start + timedelta(minutes=5 * i), "a": float(i), "b": float(i * i % 7)} for i in range(20)]
+    rows[7]["when"] = None
+    table = load_table(rows)
+    assert table.time_column == "when" and table.sample_interval == 300.0
+    assert table.timestamps[:2] == ["2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z"]       # same form as file input
+    assert table.timestamps[7] == "2026-01-01T00:35:00Z"                                  # interpolated, not blank
+    assert any("unparseable timestamp" in note for note in table.notes)
+
+
+def test_dataframes_excel_and_parquet_read_like_the_csv(tmp_path):
+    pd = pytest.importorskip("pandas")
+    demo = make_pump_station(rows=900, faults=True, fault_start=500, seed=5).table
+    reference = load_table(demo.to_csv(tmp_path / "demo.csv"))
+    frame = pd.read_csv(tmp_path / "demo.csv")
+    with_datetimes = frame.assign(timestamp=pd.to_datetime(frame["timestamp"]))
+
+    sources = {"frame": frame, "datetime column": with_datetimes, "datetime index": with_datetimes.set_index("timestamp")}
+    try:
+        import openpyxl  # noqa: F401
+        frame.to_excel(tmp_path / "demo.xlsx", index=False)
+        sources["xlsx"] = tmp_path / "demo.xlsx"
+    except ImportError:
+        pass
+    try:
+        import pyarrow  # noqa: F401
+        with_datetimes.to_parquet(tmp_path / "demo.parquet", index=False)
+        sources["parquet"] = tmp_path / "demo.parquet"
+    except ImportError:
+        pass
+
+    for name, source in sources.items():
+        table = load_table(source)
+        assert (table.sensors, table.controls, table.time_column) == (reference.sensors, reference.controls, "timestamp"), name
+        assert np.allclose(table.values, reference.values) and np.allclose(table.control_values, reference.control_values), name
+        assert table.timestamps == reference.timestamps and table.sample_interval == 300.0, name
+        assert np.array_equal(table.labels, reference.labels), name
