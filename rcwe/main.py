@@ -18,6 +18,7 @@ import argparse
 import csv
 import json
 import os
+import shlex
 import sys
 import time
 import webbrowser
@@ -81,6 +82,51 @@ def _show(path: Any) -> str:
         return str(resolved)
 
 
+def _quote(path: Any) -> str:
+    """A path as it can be pasted into a shell command."""
+    text = _show(path)
+    if os.name == "nt":
+        return f'"{text}"' if any(ch in text for ch in " &()^") else text
+    return shlex.quote(text)
+
+
+def _file_target(path: Optional[str], option: str) -> Optional[str]:
+    """Refuse, before any work is done, an output file name that is really a folder."""
+    if path and Path(path).is_dir():
+        from rcwe.toolkit import DataError
+        raise DataError(f"{option} {path} is a folder; give a file name.")
+    return path
+
+
+def _folder_target(path: Any, option: str) -> Path:
+    """Refuse, before any work is done, an output folder name that is really a file."""
+    target = Path(path)
+    if target.exists() and not target.is_dir():
+        from rcwe.toolkit import DataError
+        raise DataError(f"{option} {path} is a file; give a folder.")
+    return target
+
+
+def _number(kind: Callable[[str], Any], low: Optional[float] = None, high: Optional[float] = None,
+            open_ends: bool = False) -> Callable[[str], Any]:
+    """argparse type: a number within [low, high] (or strictly inside it when `open_ends`)."""
+    def parse(text: str) -> Any:
+        try:
+            value = kind(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"'{text}' is not a {'whole ' if kind is int else ''}number") from None
+        too_low = low is not None and (value <= low if open_ends else value < low)
+        too_high = high is not None and (value >= high if open_ends else value > high)
+        if too_low or too_high or value != value:
+            if low is not None and high is not None:
+                wanted = f"between {low:g} and {high:g}" + (" (exclusive)" if open_ends else "")
+            else:
+                wanted = f"{'greater than' if open_ends else 'at least'} {low:g}" if low is not None else f"at most {high:g}"
+            raise argparse.ArgumentTypeError(f"must be {wanted}, got {text}")
+        return value
+    return parse
+
+
 def _open_in_browser(path: str) -> None:
     try:
         webbrowser.open(Path(path).resolve().as_uri())
@@ -114,7 +160,7 @@ def _add_schema_options(parser: argparse.ArgumentParser) -> None:
 
 def _add_model_options(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group("training")
-    group.add_argument("--steps", type=int, metavar="N", help="maximum training steps (default 400; stops early when converged)")
+    group.add_argument("--steps", type=_number(int, 1), metavar="N", help="maximum training steps (default 400; stops early when converged)")
     group.add_argument("--seed", type=int, default=0, help="random seed (default 0)")
     group.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"], help="where to train (default: auto)")
 
@@ -126,7 +172,7 @@ def _add_detect_options(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--adapt", action="store_true",
                        help="let the model keep learning during the scan: flags the onset of changes, then accepts the new normal")
     group.add_argument("--no-range-check", action="store_true", help="do not flag readings merely for being outside the training range")
-    group.add_argument("--forecast", type=int, metavar="N", default=0, help="also forecast N steps past the end of the log")
+    group.add_argument("--forecast", type=_number(int, 0), metavar="N", default=0, help="also forecast N steps past the end of the log")
 
 
 def _print_events_hint(result: Any) -> None:
@@ -140,6 +186,8 @@ def _print_events_hint(result: Any) -> None:
 
 def _detect_and_export(model: Any, source: Any, args: argparse.Namespace, out_dir: Optional[Path], progress: _Progress,
                        title: Optional[str] = None) -> Any:
+    for option in ("report", "json", "csv"):
+        _file_target(getattr(args, option, None), f"--{option}")
     result = model.detect(
         source, sensitivity=_sensitivity(args.sensitivity), adapt=args.adapt,
         range_check=False if args.no_range_check else None, progress=progress,
@@ -180,7 +228,7 @@ def cmd_quickstart(args: argparse.Namespace) -> int:
     from rcwe.toolkit import TelemetryModel
     from rcwe.toolkit.demo import write_demo_files
 
-    out = Path(args.out)
+    out = _folder_target(args.out, "--out")
     progress = _Progress(not args.quiet)
     print("RCWE quickstart: a pump station with six sensors and two operator controls.\n")
     paths = write_demo_files(out, seed=args.seed)
@@ -207,7 +255,7 @@ def cmd_quickstart(args: argparse.Namespace) -> int:
     print(f"       model   {_show(model_path)}")
     print("\nNext steps")
     print("  Use your own data  rcwe analyze path/to/your_log.csv")
-    print(f"  Reuse this model   rcwe detect {_show(paths['incident'])} -m {_show(model_path)} --report again.html")
+    print(f"  Reuse this model   rcwe detect {_quote(paths['incident'])} -m {_quote(model_path)} --report again.html")
     print("  Work in a browser  rcwe serve")
     if not args.no_open:
         _open_in_browser(report)
@@ -257,14 +305,14 @@ def cmd_fit(args: argparse.Namespace) -> int:
     from rcwe.toolkit import TelemetryModel
 
     progress = _Progress(not args.quiet)
+    out = _file_target(args.output or str(Path(args.file).with_suffix(".rcwe").name), "-o")
     model = TelemetryModel(**_model_kwargs(args)).fit(args.file, progress=progress, **_schema_kwargs(args))
     progress.close()
     print(model.summary())
     for note in model.fit_summary_.notes:
         print(f"Note: {note}")
-    out = args.output or str(Path(args.file).with_suffix(".rcwe").name)
     print(f"\nModel saved to {_show(model.save(out))}")
-    print(f"Next: rcwe detect <new_log.csv> -m {out} --report report.html")
+    print(f"Next: rcwe detect <new_log.csv> -m {_quote(out)} --report report.html")
     return EXIT_OK
 
 
@@ -281,6 +329,8 @@ def cmd_detect(args: argparse.Namespace) -> int:
 def cmd_forecast(args: argparse.Namespace) -> int:
     from rcwe.toolkit import TelemetryModel
 
+    _file_target(args.csv, "--csv")
+    _file_target(args.json, "--json")
     model = TelemetryModel.load(args.model, device=args.device)
     forecast = model.forecast(args.steps, data=args.file, future_controls=args.planned_controls)
     print(forecast.summary())
@@ -293,15 +343,22 @@ def cmd_forecast(args: argparse.Namespace) -> int:
 
 def cmd_analyze(args: argparse.Namespace) -> int:
     from rcwe.paths import output_dir
-    from rcwe.toolkit import TelemetryModel, load_table
+    from rcwe.toolkit import DataError, TelemetryModel, load_table
 
     progress = _Progress(not args.quiet)
-    table = load_table(args.file, **_schema_kwargs(args))
-    out = Path(args.out) if args.out else output_dir() / Path(args.file).stem
+    out = _folder_target(args.out, "--out") if args.out else output_dir() / Path(args.file).stem
+    schema = _schema_kwargs(args)
+    table = load_table(args.file, **schema)
     out.mkdir(parents=True, exist_ok=True)
 
     if args.train:
-        train_source: Any = args.train
+        try:
+            train_source: Any = load_table(args.train, **schema)
+        except DataError:
+            if not schema["label_column"]:
+                raise
+            # A log of known-good operation has no reason to carry the label column.
+            train_source = load_table(args.train, **dict(schema, label_column=None))
         print(f"Learning normal behaviour from {args.train} ...")
     else:
         rows = args.train_rows or int(round(table.n_rows * args.train_fraction))
@@ -309,9 +366,12 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         train_source = table.slice(0, rows)
         share = f"the first {rows:,} of {table.n_rows:,} rows"
         print(f"Learning normal behaviour from {share} of {args.file} ...")
-    model = TelemetryModel(**_model_kwargs(args)).fit(train_source, progress=progress, **(_schema_kwargs(args) if args.train else {}))
+    model = TelemetryModel(**_model_kwargs(args)).fit(train_source, progress=progress)
     progress.close()
-    print(model.summary() + "\n")
+    print(model.summary())
+    for note in model.fit_summary_.notes:
+        print(f"Note: {note}")
+    print()
 
     print(f"Scanning all {table.n_rows:,} rows ...")
     result = _detect_and_export(model, table, args, out, progress, title=args.title or f"RCWE analysis: {Path(args.file).name}")
@@ -327,15 +387,21 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 _DELIMITERS = (",", ";", "\t", "|")
 
 
-def _follow_csv(path: Path, interval: float, once: bool) -> Iterator[Optional[Dict[str, str]]]:
+def _follow_csv(path: Path, interval: float, once: bool,
+                on_header: Optional[Callable[[List[str]], None]] = None) -> Iterator[Optional[Dict[str, str]]]:
     """
     Yield each row of a growing delimited file as a dict, and None once when the content that
     was already there has been read.
 
     Works like `tail -F`: a row is delivered when its line is complete, and if the file is
     truncated or replaced (log rotation) reading restarts from the top of the new content.
-    The delimiter is taken from the header line (comma, semicolon, tab or pipe).
+    The delimiter is taken from the header line (comma, semicolon, tab or pipe). Lines that
+    start with "#" are comments. `on_header` is called with the column names each time a
+    header line is read.
     """
+    from rcwe.toolkit import DataError
+    from rcwe.toolkit.table import _looks_like_data
+
     def identity(open_file: Any) -> Tuple[int, int]:
         info = os.fstat(open_file.fileno())
         return info.st_dev, info.st_ino
@@ -344,17 +410,19 @@ def _follow_csv(path: Path, interval: float, once: bool) -> Iterator[Optional[Di
     try:
         ident = identity(handle)
         header: Optional[List[str]] = None
+        earlier: Optional[List[str]] = None          # the header in force before a rotation
         delimiter = ","
         pending = b""
         caught_up = False
         while True:
             chunk = handle.readline()
+            unfinished = False
             if chunk.endswith(b"\n"):
                 line, pending = pending + chunk, b""
             else:
                 pending += chunk                     # nothing new, or a row that is still being written
                 if once and pending:
-                    line, pending = pending, b""     # a finished file whose last line has no newline
+                    line, pending, unfinished = pending, b"", True     # the last line of a file has no newline
                 else:
                     if not caught_up:
                         caught_up = True
@@ -370,18 +438,29 @@ def _follow_csv(path: Path, interval: float, once: bool) -> Iterator[Optional[Di
                         handle.close()
                         handle = path.open("rb")
                         ident = identity(handle)
-                        header, pending = None, b""
+                        earlier, header, pending = header or earlier, None, b""
                     continue
-            text = line.decode("utf-8", errors="replace").rstrip("\r\n")
-            if header is None:
-                text = text.lstrip("\ufeff")
-            if not text.strip():
+            text = line.decode("utf-8", errors="replace").rstrip("\r\n").lstrip("\ufeff")
+            if not text.strip() or text.lstrip().startswith("#"):
                 continue
             if header is None:
-                delimiter = max(_DELIMITERS, key=text.count)
-                header = [cell.strip() for cell in next(csv.reader([text], delimiter=delimiter))]
-                continue
-            yield dict(zip(header, next(csv.reader([text], delimiter=delimiter))))
+                if earlier is not None and _looks_like_data(next(csv.reader([text], delimiter=delimiter))):
+                    # Numbers where column names should be: after `copytruncate` rotation that is
+                    # simply the next reading, and the columns are the ones the file had before.
+                    header = earlier
+                else:
+                    delimiter = max(_DELIMITERS, key=text.count)
+                    cells = next(csv.reader([text], delimiter=delimiter))
+                    if _looks_like_data(cells):
+                        raise DataError(f"{path} has no header row naming its columns.")
+                    header = [cell.strip() for cell in cells]
+                    if on_header is not None:
+                        on_header(header)
+                    continue
+            cells = next(csv.reader([text], delimiter=delimiter))
+            if unfinished and len(cells) != len(header):
+                continue                             # cut off in the middle of being written
+            yield dict(zip(header, cells))
     finally:
         handle.close()
 
@@ -395,14 +474,21 @@ def cmd_watch(args: argparse.Namespace) -> int:
     path = Path(args.file)
     if not path.exists():
         raise DataError(f"File not found: {path}")
-    log = open(args.jsonl, "a", encoding="utf-8") if args.jsonl else None
+    log = open(_file_target(args.jsonl, "--jsonl"), "a", encoding="utf-8") if args.jsonl else None
     live = args.once or args.from_start
     print(f"Watching {path} with {args.model} (threshold {monitor.threshold:g} sigma, "
           f"{'adaptive' if args.adapt else 'reference'} mode). Press Ctrl+C to stop.")
 
     rows = alerts = quiet = 0
-    checked = False
     event: Optional[Dict[str, Any]] = None
+
+    def check_columns(columns: List[str]) -> None:
+        absent = [name for name in model.sensors if name not in columns]
+        if absent:
+            raise DataError(
+                f"{path} has no column named {', '.join(repr(name) for name in absent)}, which this model "
+                f"was trained on. Columns found: {', '.join(name for name in columns if name) or '(none)'}."
+            )
 
     def emit(kind: str, payload: Dict[str, Any]) -> None:
         if log:
@@ -417,20 +503,12 @@ def cmd_watch(args: argparse.Namespace) -> int:
             event = None
 
     try:
-        for raw in _follow_csv(path, args.interval, args.once):
+        for raw in _follow_csv(path, args.interval, args.once, on_header=check_columns):
             if raw is None:
                 if not live:
                     print(f"  primed on {rows:,} existing row(s); waiting for new ones ...")
                     live = True
                 continue
-            if not checked:
-                checked = True
-                absent = [name for name in model.sensors if name not in raw]
-                if absent:
-                    raise DataError(
-                        f"{path} has no column named {', '.join(repr(name) for name in absent)}, which this model "
-                        f"was trained on. Columns found: {', '.join(key for key in raw if key) or '(none)'}."
-                    )
             reading: Dict[str, Any] = {}
             for name in model.sensors + model.controls:
                 value = _to_float(raw.get(name))
@@ -556,11 +634,11 @@ def cmd_bench(args: argparse.Namespace) -> int:
 def cmd_demo_data(args: argparse.Namespace) -> int:
     from rcwe.toolkit.demo import write_demo_files
 
-    paths = write_demo_files(args.out, seed=args.seed)
+    paths = write_demo_files(_folder_target(args.out, "--out"), seed=args.seed)
     print("Wrote demo telemetry:")
     for key, path in paths.items():
         print(f"  {key:<9}{_show(path)}")
-    print(f"\nTry: rcwe analyze {_show(paths['incident'])} --train {_show(paths['normal'])}")
+    print(f"\nTry: rcwe analyze {_quote(paths['incident'])} --train {_quote(paths['normal'])}")
     return EXIT_OK
 
 
@@ -575,8 +653,16 @@ def cmd_version(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------------------
 # parser
 # --------------------------------------------------------------------------------------
+class _Parser(argparse.ArgumentParser):
+    """A mistake on the command line exits with status 1: status 2 means "anomalies were found"."""
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        self.print_usage(sys.stderr)
+        self.exit(EXIT_ERROR, f"{self.prog}: error: {message}\n")
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         prog="rcwe",
         description="Resonant Causal World Engine: find and explain anomalies in telemetry, and forecast it.",
         epilog="New here? Start with `rcwe quickstart`. Problems? Run `rcwe doctor`.",
@@ -601,8 +687,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = add("analyze", cmd_analyze, "One-shot: learn normal behaviour, scan the log, write report + model + scores.")
     p.add_argument("file", help="telemetry log (CSV, TSV, JSON, JSON-lines; .gz accepted)")
     p.add_argument("--train", metavar="FILE", help="separate log of known-good operation to learn from (recommended when you have one)")
-    p.add_argument("--train-fraction", type=float, default=0.6, metavar="F", help="without --train: learn from the first F of the rows (default 0.6)")
-    p.add_argument("--train-rows", type=int, metavar="N", help="without --train: learn from the first N rows")
+    p.add_argument("--train-fraction", type=_number(float, 0.0, 1.0, open_ends=True), default=0.6, metavar="F",
+                   help="without --train: learn from the first F of the rows (default 0.6)")
+    p.add_argument("--train-rows", type=_number(int, 12), metavar="N", help="without --train: learn from the first N rows")
     p.add_argument("--out", metavar="DIR", help="results folder (default: ./rcwe_output/<file name>/)")
     p.add_argument("--title", help="report title")
     p.add_argument("--open", action="store_true", help="open the report in a browser when done")
@@ -635,7 +722,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = add("forecast", cmd_forecast, "Forecast every sensor past the end of a log (or of the training log).")
     p.add_argument("file", nargs="?", help="recent telemetry to forecast from (default: the end of the training log)")
     p.add_argument("-m", "--model", required=True, help="model file")
-    p.add_argument("--steps", type=int, default=48, help="how many steps ahead (default 48)")
+    p.add_argument("--steps", type=_number(int, 1), default=48, help="how many steps ahead (default 48)")
     p.add_argument("--planned-controls", metavar="FILE", help="CSV with the planned control values for the forecast window")
     p.add_argument("--csv", metavar="FILE", help="write the forecast and its 80%% interval as CSV")
     p.add_argument("--json", metavar="FILE", help="write the forecast as JSON")
@@ -648,8 +735,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--adapt", action="store_true", help="keep learning from the stream (accept lasting changes as the new normal)")
     p.add_argument("--from-start", action="store_true", help="alert on rows already in the file (default: use them to warm up silently)")
     p.add_argument("--once", action="store_true", help="process what is in the file now, then exit")
-    p.add_argument("--interval", type=float, default=1.0, metavar="SEC", help="how often to check for new rows (default 1s)")
-    p.add_argument("--max-rows", type=int, metavar="N", help="stop after N rows")
+    p.add_argument("--interval", type=_number(float, 0.0, open_ends=True), default=1.0, metavar="SEC",
+                   help="how often to check for new rows (default 1s)")
+    p.add_argument("--max-rows", type=_number(int, 1), metavar="N", help="stop after N rows")
     p.add_argument("--jsonl", metavar="FILE", help="append alerts to FILE as JSON lines (for other tools to pick up)")
     p.add_argument("--fail-on-anomaly", action="store_true", help="exit with status 2 if any alert was raised")
     p.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
@@ -661,12 +749,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = add("serve", cmd_serve, "Start RCWE Studio: upload a log in the browser and explore the results.")
     p.add_argument("--host", default="127.0.0.1", help="address to bind (default: this machine only)")
-    p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--port", type=_number(int, 0, 65535), default=8765)
     p.add_argument("--no-open", action="store_true", help="do not open a browser window")
 
     p = add("ui", cmd_ui, "Start the Mission Control dashboard (live engine telemetry from the built-in sandbox).")
     p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=8766)
+    p.add_argument("--port", type=_number(int, 0, 65535), default=8766)
     p.add_argument("--no-open", action="store_true")
     p.add_argument("--export", metavar="HTML", help="write the standalone demo page instead of starting a server")
 
@@ -685,7 +773,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as stop:                       # --help (0) or a mistake on the command line (1)
+        return int(stop.code or 0)
     if not getattr(args, "command", None):
         parser.print_help()
         return EXIT_OK

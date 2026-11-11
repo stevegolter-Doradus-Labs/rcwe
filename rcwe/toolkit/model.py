@@ -221,7 +221,7 @@ class TelemetryModel:
         choice = self.settings["device"]
         if choice in ("auto", None, ""):
             return select_best_device()
-        return torch.device(choice)
+        return select_best_device(str(choice))
 
     # ------------------------------------------------------------------------------
     # data plumbing
@@ -873,20 +873,15 @@ class TelemetryModel:
 
         future = np.repeat(un[-1][None, None, :], steps, axis=1)
         if future_controls is not None and self.controls:
-            planned = future_controls
-            if not isinstance(planned, np.ndarray):
-                try:
-                    planned_table = load_table(planned)
-                    planned = np.stack([planned_table.column(c) for c in self.controls], axis=1)
-                except (DataError, KeyError) as exc:
-                    raise DataError(f"future_controls could not be read: {exc}") from exc
-            planned = np.asarray(planned, dtype=float).reshape(-1, len(self.controls))
+            planned = self._planned_controls(future_controls)
             if planned.shape[0] < steps:
                 notes.append(f"future_controls covers {planned.shape[0]} of {steps} steps; the last row is held after that.")
                 planned = np.vstack([planned, np.repeat(planned[-1:], steps - planned.shape[0], axis=0)])
             future = ((planned[:steps] - self._cmean) / self._cstd)[None, :, :]
         elif self.controls:
             notes.append("Controls were assumed to stay at their latest values.")
+        elif future_controls is not None:
+            notes.append("This model has no control inputs; future_controls was ignored.")
 
         rolled = self._rollout(qn[-1:], p[-1:], field, future)[0]            # [steps, n]
         fc = self._fc
@@ -926,6 +921,43 @@ class TelemetryModel:
             model_weight={s: float(w) for s, w in zip(self.sensors, weights.mean(axis=0))},
             notes=notes,
         )
+
+    def _planned_controls(self, source: Any) -> np.ndarray:
+        """
+        Planned control values for a forecast window as an array [rows, n_controls].
+
+        `source` is an array (columns in the model's control order), or a file / table / list of
+        row dicts that holds the control columns by name. Other columns are ignored, so a file
+        with nothing but the controls works as well as a complete log.
+        """
+        names = ", ".join(self.controls)
+        if isinstance(source, (list, tuple)) and source and not isinstance(source[0], dict):
+            source = np.asarray(source, dtype=float)
+        if hasattr(source, "detach") and hasattr(source, "cpu"):           # torch.Tensor
+            source = source.detach().cpu().numpy()
+        if isinstance(source, np.ndarray):
+            planned = np.asarray(source, dtype=float)
+            if planned.ndim == 1:
+                planned = planned.reshape(-1, 1)
+            if planned.ndim != 2 or planned.shape[1] != len(self.controls):
+                raise DataError(
+                    f"future_controls has shape {tuple(np.shape(source))}; expected [steps, {len(self.controls)}] "
+                    f"with one column per control ({names})."
+                )
+        elif isinstance(source, TelemetryTable):
+            try:
+                planned = np.stack([source.column(c) for c in self.controls], axis=1)
+            except KeyError as exc:
+                raise DataError(f"future_controls has no column {exc}; it needs the control column(s) {names}.") from exc
+        else:
+            try:
+                planned = load_table(source, sensors=list(self.controls), controls=[]).values
+            except DataError as exc:
+                raise DataError(f"future_controls needs the control column(s) {names}: {exc}") from exc
+        if planned.shape[0] == 0:
+            raise DataError("future_controls is empty.")
+        # A gap in the plan is filled the way a gap in a log is: with the control's typical value.
+        return np.where(np.isnan(planned), self._cmean, planned)
 
     # ------------------------------------------------------------------------------
     # persistence

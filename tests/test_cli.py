@@ -185,3 +185,97 @@ def test_doctor_reports_a_healthy_installation(capsys):
     assert main(["doctor"]) == EXIT_OK
     text = capsys.readouterr().out
     assert "[ ok ] PyTorch" in text and "[ ok ] End-to-end test" in text and "[FAIL]" not in text
+
+
+def test_mistakes_on_the_command_line_never_look_like_anomalies(workspace, capsys):
+    """Status 2 means "anomalies found", so a typo or a missing option must not exit with it."""
+    assert main(["detect", workspace["incident"], "-m", workspace["model"], "--fail-on-anomoly"]) == EXIT_ERROR
+    assert main(["detect", workspace["incident"]]) == EXIT_ERROR
+    assert main(["detect", "--help"]) == EXIT_OK
+    capsys.readouterr()
+    for option, value, message in [
+        ("--train-fraction", "0", "between 0 and 1"), ("--train-fraction", "60", "between 0 and 1"),
+        ("--train-rows", "-5", "at least 12"), ("--steps", "0", "at least 1"), ("--steps", "2.5", "not a whole number"),
+        ("--forecast", "-3", "at least 0"),
+    ]:
+        assert main(["analyze", workspace["incident"], option, value]) == EXIT_ERROR
+        assert message in capsys.readouterr().err, (option, value)
+
+
+def test_output_paths_of_the_wrong_kind_are_refused_before_any_work(workspace, capsys):
+    root = workspace["root"]
+    (root / "a_file.txt").write_text("x")
+    (root / "a_folder").mkdir()
+    cases = [
+        (["analyze", workspace["incident"], "--out", str(root / "a_file.txt")], "is a file; give a folder"),
+        (["fit", workspace["normal"], "-o", str(root / "a_folder")], "is a folder; give a file name"),
+        (["detect", workspace["incident"], "-m", workspace["model"], "--report", str(root / "a_folder")], "is a folder; give a file name"),
+        (["demo-data", "--out", str(root / "a_file.txt")], "is a file; give a folder"),
+    ]
+    for argv, message in cases:
+        assert main(argv) == EXIT_ERROR
+        captured = capsys.readouterr()
+        assert message in captured.err and "Training" not in captured.err + captured.out, argv
+
+
+def test_analyze_scores_against_labels_even_when_the_training_log_has_none(workspace, capsys):
+    # `--label-column` names a column of the log being scanned; a known-good training log does not have it.
+    code = main(["analyze", workspace["incident"], "--train", workspace["normal"], "--label-column", "anomaly",
+                 "--steps", "120", "--quiet", "--device", "cpu", "--out", str(workspace["root"] / "with_labels")])
+    assert code == EXIT_OK
+    assert "incidents caught" in capsys.readouterr().out
+
+
+def test_suggested_commands_can_be_pasted_when_paths_have_spaces(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert main(["demo-data", "--out", "my demo data"]) == EXIT_OK
+    hint = [line for line in capsys.readouterr().out.splitlines() if line.startswith("Try:")][0]
+    assert "my demo data/pump_station_incident.csv" in hint and ("'" in hint or '"' in hint)
+
+
+def test_watch_skips_comments_and_rows_caught_mid_write(workspace, capsys):
+    lines = Path(workspace["normal"]).read_text().splitlines()
+    log = workspace["root"] / "half_written.csv"
+    log.write_text("# pump station export\n" + "\n".join(lines[:151]) + "\n" + lines[151][:40])   # last row cut off
+    assert main(["watch", str(log), "-m", workspace["model"], "--once", "--fail-on-anomaly"]) == EXIT_OK
+    assert "Processed 150 row(s); 0 alert(s)." in capsys.readouterr().out
+
+    headerless = workspace["root"] / "headerless.csv"
+    headerless.write_text("\n".join(lines[1:40]) + "\n")
+    assert main(["watch", str(headerless), "-m", workspace["model"], "--once"]) == EXIT_ERROR
+    assert "no header row" in capsys.readouterr().err
+
+
+def test_follow_csv_keeps_its_columns_when_a_log_is_truncated_in_place(tmp_path):
+    from rcwe.main import _follow_csv
+
+    headers = []
+    log = tmp_path / "live.csv"
+    log.write_text("a,b\n1,2\n3,4\n")
+    rows = _follow_csv(log, interval=0.01, once=False, on_header=headers.append)
+    assert [next(rows), next(rows), next(rows)] == [{"a": "1", "b": "2"}, {"a": "3", "b": "4"}, None]
+    log.write_text("5,6\n")                         # logrotate copytruncate: the writer just carries on with data
+    assert next(rows) == {"a": "5", "b": "6"}       # not mistaken for a header, and not lost
+    with log.open("a") as handle:
+        handle.write("7,8\n")
+    assert next(rows) == {"a": "7", "b": "8"}
+    assert headers == [["a", "b"]]
+    rows.close()
+
+
+def test_a_device_that_is_not_there_is_explained(capsys, monkeypatch):
+    monkeypatch.setenv("RCWE_DEVICE", "gpu0")
+    assert main(["doctor"]) == EXIT_ERROR
+    assert "[FAIL] Accelerator: RCWE_DEVICE asks for 'gpu0'" in capsys.readouterr().out
+    monkeypatch.delenv("RCWE_DEVICE")
+    with pytest.raises(ValueError, match="not a device PyTorch knows"):
+        TelemetryModel(device="warp-drive").fit(make_pump_station(rows=300, faults=False).table)
+
+
+def test_demo_generator_limits_are_stated_up_front():
+    with pytest.raises(ValueError, match="at least 600 rows"):
+        make_pump_station(rows=500)
+    assert make_pump_station(rows=700).table.labels.sum() > 0
+    assert make_pump_station(rows=300, faults=False).table.n_rows == 300
+    shifted = make_pump_station(rows=300, faults=False, start="2026-03-02T00:00:00+02:00").table
+    assert shifted.timestamps[0] == "2026-03-01T22:00:00Z"            # labelled in UTC, matching time_seconds

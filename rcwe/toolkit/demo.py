@@ -52,6 +52,9 @@ def make_pump_station(
     """
     if rows < 200:
         raise ValueError("rows must be at least 200 for the pump-station demo.")
+    if faults and fault_start is None and rows < 600:
+        raise ValueError(f"The five demo faults need 400 rows after a clean stretch: ask for at least 600 rows "
+                         f"(got {rows}), or pass faults=False for a clean log.")
     rng = np.random.default_rng(seed)
     burn_in = 400                       # simulated and discarded, so the log starts mid-operation
     wanted, rows = rows, rows + burn_in
@@ -96,10 +99,10 @@ def make_pump_station(
     events: List[Dict[str, Any]] = []
 
     if faults:
-        base = int(rows * 0.70) if fault_start is None else int(fault_start)
+        base = min(int(rows * 0.70), rows - 400) if fault_start is None else int(fault_start)
         span = rows - base
-        if span < 400:
-            raise ValueError("Not enough rows after fault_start to place the demo faults (need >= 400).")
+        if base < 0 or span < 400:
+            raise ValueError(f"fault_start={fault_start} leaves {max(span, 0)} of {rows} rows for the five demo faults; they need 400.")
 
         def at(fraction: float) -> int:
             return base + int(span * fraction)
@@ -139,8 +142,7 @@ def make_pump_station(
     control_values = np.round(np.stack([valve, speed], axis=1), 4)
 
     t0 = datetime.fromisoformat(start.replace("Z", "+00:00"))
-    if t0.tzinfo is None:
-        t0 = t0.replace(tzinfo=timezone.utc)
+    t0 = t0.replace(tzinfo=timezone.utc) if t0.tzinfo is None else t0.astimezone(timezone.utc)
     step = timedelta(minutes=interval_minutes)
     stamps = [(t0 + i * step).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(rows)]
     seconds = np.array([(t0 + i * step).timestamp() for i in range(rows)], dtype=float)

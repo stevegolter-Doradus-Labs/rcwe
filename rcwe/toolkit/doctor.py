@@ -64,7 +64,10 @@ def _accelerator() -> Check:
         from rcwe.kernels.accelerator import describe_accelerator, select_best_device
     except ImportError as exc:
         return Check("Accelerator", "fail", f"cannot import the engine ({exc})", "pip install -e .   from the repository root")
-    device = select_best_device()
+    try:
+        device = select_best_device()
+    except ValueError as exc:
+        return Check("Accelerator", "fail", str(exc))
     label = describe_accelerator(device)
     try:
         engine = ResonantCausalWorldEngine(d_input=8, d_model=16, d_action=2, num_worldlines=2, num_freq_bands=4).to(device)
