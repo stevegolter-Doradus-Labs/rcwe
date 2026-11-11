@@ -13,7 +13,7 @@ import pytest
 
 from rcwe.toolkit import DataError, TelemetryModel, TelemetryTable
 from rcwe.toolkit.demo import make_pump_station
-from rcwe.toolkit.results import _fmt, _fmt_pair
+from rcwe.toolkit.results import _fmt, _fmt_pair, _round
 from rcwe.toolkit.scoring import detection_metrics, resolve_threshold
 
 
@@ -261,6 +261,22 @@ def test_tiny_and_huge_values_survive_exports_and_descriptions(plant, tmp_path):
     assert [_fmt(v) for v in (1013.25, 1009.8, 45.56, 6.5, 0.00123)] == ["1013.2", "1009.8", "45.56", "6.5", "0.00123"]
     assert _fmt_pair(1e9 + 12.3, 1e9 + 7.9) == ["1000000012", "1000000008"]         # not "1e+09 vs 1e+09"
     assert _fmt_pair(3.0, 3.0000002) == ["3.00000000", "3.00000020"]
+
+
+def test_large_readings_keep_every_digit_a_sensor_measured_in_exports():
+    """A meter at 1,234,567.8 that climbs half a unit a row: rounding to seven digits flattened it."""
+    rng = np.random.default_rng(1)
+    meter = [1234567.8 + 0.5 * i + (150.0 if i >= 310 else 0.0) for i in range(400)]
+    rows = [{"meter_kwh": meter[i], "temp": 20 + math.sin(i / 9) + rng.normal(0, 0.05)} for i in range(400)]
+    result = TelemetryModel(max_steps=40, device="cpu").fit(rows[:240]).detect(rows)
+
+    exported = [row["meter_kwh"] for row in result.to_rows()]
+    assert exported == pytest.approx(meter, abs=1e-6) and len(set(exported)) == 400      # no two rows merged
+    payload = result.to_dict()
+    json.dumps(payload, allow_nan=False)
+    jump = next(e for e in payload["events"] if e["sensors"][0]["name"] == "meter_kwh")
+    assert jump["sensors"][0]["actual"] == pytest.approx(meter[jump["peak"]], abs=1e-6)
+    assert _round(0.1 + 0.2) == 0.3 and _round(3e-9 * 1.1) == 3.3e-9                      # while floating-point noise still goes
 
 
 def test_export_columns_stay_distinct_whatever_the_sensors_are_called():

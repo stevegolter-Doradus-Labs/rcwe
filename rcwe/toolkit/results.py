@@ -18,11 +18,13 @@ import numpy as np
 __all__ = ["AnomalyEvent", "DetectionResult", "Forecast", "FitSummary"]
 
 
-def _round(value: Any, digits: int = 7) -> Any:
+def _round(value: Any, digits: int = 12) -> Any:
     """
-    JSON-friendly copy of `value` with floats rounded to `digits` significant digits
-    (not decimal places: readings of 3e-9 must not all turn into 0.0) and non-finite
-    numbers replaced by None.
+    JSON-friendly copy of `value` with floats rounded to `digits` significant digits and
+    non-finite numbers replaced by None. Significant digits, not decimal places: readings of
+    3e-9 must not all turn into 0.0. Readings keep twelve digits by default, which removes
+    floating-point noise (0.30000000000000004) without touching anything a sensor measured:
+    a counter at 1,234,567.8 that climbs by 0.5 a row has to survive an export.
     """
     if value is None:
         return None
@@ -197,9 +199,9 @@ class AnomalyEvent:
             "start_time": self.start_time, "end_time": self.end_time,
             "peak": self.peak, "peak_time": self.peak_time, "peak_score": _round(self.peak_score, 3),
             "severity": self.severity, "kind": self.kind,
-            "sensors": [{k: _round(v, 5) for k, v in s.items()} for s in self.sensors],
+            "sensors": [{k: _round(v, 6 if k in ("peak_score", "share") else 12) for k, v in s.items()} for s in self.sensors],
             "description": self.description, "what": self.what,
-            "control_changes": [{k: _round(v, 6) for k, v in c.items()} for c in self.control_changes],
+            "control_changes": [{k: _round(v) for k, v in c.items()} for c in self.control_changes],
         }
 
 
