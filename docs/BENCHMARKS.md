@@ -16,16 +16,33 @@ Every figure below was measured by this run. Results move with hardware, PyTorch
 
 | Seed | Faults caught | Right sensor blamed | False alarms | False alarms on a clean log | AUROC | Point F1 | One-step skill vs naive | 48-step forecast skill | Training time |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 7 | 5 / 5 | 5 / 5 | 0 | 0 | 0.988 | 0.96 | +32% | +90% | 14 s |
-| 1 | 5 / 5 | 5 / 5 | 0 | 0 | 0.987 | 0.96 | +30% | +89% | 13 s |
-| 2 | 5 / 5 | 5 / 5 | 0 | 0 | 0.986 | 0.97 | +29% | +79% | 12 s |
-| 3 | 5 / 5 | 5 / 5 | 0 | 0 | 0.988 | 0.96 | +29% | +85% | 14 s |
-| 4 | 5 / 5 | 5 / 5 | 0 | 0 | 0.986 | 0.96 | +31% | +92% | 12 s |
+| 7 | 5 / 5 | 5 / 5 | 0 | 0 | 0.988 | 0.97 | +31% | +87% | 14 s |
+| 1 | 5 / 5 | 5 / 5 | 0 | 0 | 0.986 | 0.97 | +31% | +87% | 14 s |
+| 2 | 5 / 5 | 5 / 5 | 0 | 0 | 0.985 | 0.96 | +29% | +79% | 13 s |
+| 3 | 5 / 5 | 5 / 5 | 0 | 0 | 0.987 | 0.97 | +29% | +88% | 14 s |
+| 4 | 5 / 5 | 5 / 5 | 0 | 0 | 0.989 | 0.97 | +30% | +92% | 12 s |
 | **Total** | **25 / 25** | **25 / 25** | **0** | **0** | | | | | |
 
 *Skill* is the reduction in mean squared error against the naive forecast "the value stays where it is", measured on rows held out from training. The demo data is synthetic; expect lower numbers on noisy real logs, and read the skill figure in your own report before relying on forecasts.
 
-## 2. Engine vs frozen Transformer on the flow sandbox
+## 2. Toolkit: control inputs, by default and declared as commands
+
+The same pump station with no faults, but with an operator who moves the valve and the pump speed by hand (18 step changes per control over 4,200 rows; the plant responds as it should). The model is trained on the first 3,000 rows twice: with the controls treated as they are by default, where a control is only used up to the row being predicted *from* because it might be reacting to the sensors, and with both declared as commands (`fit(..., commands=True)` or `--commands all`), where the model is also told their value for the row it predicts.
+
+| Seed | Controls | One-step skill | Events on 1,200 fault-free rows with operator steps | ...of which point at the control that moved | Forecast response to a planned +0.10 valve step (24 steps) | What the plant does |
+|---:|---|---:|---:|---:|---:|---:|
+| 7 | default | +24% | 0 | 0 | +0.01 m3/h | +5.43 m3/h |
+| 7 | commands | +32% | 0 | 0 | +4.34 m3/h | +5.43 m3/h |
+| 1 | default | +26% | 6 (worst: medium) | 6 | +0.05 m3/h | +5.53 m3/h |
+| 1 | commands | +33% | 1 (worst: medium) | 1 | +5.16 m3/h | +5.53 m3/h |
+| 2 | default | +24% | 0 | 0 | +0.01 m3/h | +5.15 m3/h |
+| 2 | commands | +33% | 1 (worst: low) | 1 | +4.47 m3/h | +5.15 m3/h |
+
+- Told nothing about the row it predicts, the model cannot anticipate an operator's step: its forecast moves by 0% of what the plant does. With the controls declared as commands it moves by 87%: the right direction and most, not all, of the size.
+- An operator's step is not a fault. In the scanned rows the operator made 25 step changes in all. They raised 6 event(s) with the controls as by default and 2 with them declared as commands; 6 and 2 of those say which control changed as they began, so they can be told from a fault at a glance. (The training log contains steps of the same kind, which is what keeps most of them quiet.)
+- Declare as commands only controls that are set independently of the sensors (setpoints, schedules). A controller output reacts to the sensors within the same sample; told its value, the model would learn the reaction and explain faults away. That is why it is not the default.
+
+## 3. Engine vs frozen Transformer on the flow sandbox
 
 Three seeds, 80,611 engine parameters vs 104,672 in the Transformer baseline. After training, the sandbox topology is mutated and an offset is added to the observations; the engine keeps adapting online (no backpropagation) while the Transformer's weights stay frozen.
 
@@ -42,25 +59,25 @@ How to read this:
 - In the original protocol the engine's `forward` is given the true next state (`y_target`) for the step being scored; it uses it to weight its world-lines before producing the prediction, which the baseline cannot do. The second row scores the prediction first and lets the engine adapt afterwards. Here the two rows agree, so that access is not what drives the result. The toolkit (`TelemetryModel`) and Mission Control always work the second way.
 - Regime identification is measured on short rollouts started from a fresh sandbox state. In a long continuous stream (Mission Control) single-step evidence is noisier and the dashboard smooths it over time.
 
-## 3. Context-length scaling
+## 4. Context-length scaling
 
 One forward pass over sequences of growing length (batch 2, 64-dimensional model).
 
 | Sequence length | Transformer latency | RCWE latency | Transformer attention workspace | RCWE standing wavefield |
 |---:|---:|---:|---:|---:|
-| 256 | 3.1 ms | 12.2 ms | 2 MB | 16.0 KB |
-| 1,024 | 48.4 ms | 20.4 ms | 34 MB | 16.0 KB |
-| 4,096 | 688.1 ms | 77.2 ms | 520 MB | 16.0 KB |
-| 8,192 | not run (over budget) | 250.5 ms | 2,064 MB | 16.0 KB |
-| 16,384 | not run (over budget) | 377.2 ms | 8,224 MB | 16.0 KB |
-| 32,768 | not run (over budget) | 1087.4 ms | 32,832 MB | 16.0 KB |
+| 256 | 2.5 ms | 11.7 ms | 2 MB | 16.0 KB |
+| 1,024 | 39.8 ms | 19.8 ms | 34 MB | 16.0 KB |
+| 4,096 | 678.9 ms | 67.6 ms | 520 MB | 16.0 KB |
+| 8,192 | not run (over budget) | 145.4 ms | 2,064 MB | 16.0 KB |
+| 16,384 | not run (over budget) | 354.5 ms | 8,224 MB | 16.0 KB |
+| 32,768 | not run (over budget) | 1032.2 ms | 32,832 MB | 16.0 KB |
 
 - The wavefield column is measured from the tensor the engine carries between calls: its size does not depend on sequence length.
 - The attention workspace is computed from the sequence length, not measured. Above a 1 GB budget the baseline is **not run**, so no out-of-memory failure was observed here: the table shows where a dense-attention model would need that much memory, and that the engine still runs at those lengths.
 
-## 4. Regime-shift suite (ETT / SWaT / NASA-style)
+## 5. Regime-shift suite (ETT / SWaT / NASA-style)
 
-Three **synthetic** 40-step logs shaped like well-known industrial datasets (they are generated by `real_world_suite.py`, not downloaded), each with a fault injected at step 20. Same original protocol as section 2.
+Three **synthetic** 40-step logs shaped like well-known industrial datasets (they are generated by `real_world_suite.py`, not downloaded), each with a fault injected at step 20. Same original protocol as section 3.
 
 | Domain | Sensors / controls | RCWE post-shift MSE | Frozen Transformer | Difference | Fault injected on | Toolkit: first event |
 |---|---:|---:|---:|---:|---|---|
@@ -70,7 +87,7 @@ Three **synthetic** 40-step logs shaped like well-known industrial datasets (the
 
 The last column is a separate check with the toolkit: `TelemetryModel` is trained on the 20 fault-free rows of each log and then scans all 40. The sensor an event names first was one of the injected ones in **3 of 3** logs. Twenty rows are far too few to calibrate scores, and the model says so; read this as a check of attribution, not of sensitivity.
 
-## 5. Symbolic conservation and code-trace tasks
+## 6. Symbolic conservation and code-trace tasks
 
 | Task | RCWE | Transformer | Difference |
 |---|---:|---:|---:|
@@ -80,26 +97,26 @@ The last column is a separate check with the toolkit: `TelemetryModel` is traine
 
 The code-trace result is within noise of the baseline and can fall on either side depending on the platform.
 
-## 6. Long-context kernel, self-healing control, language model
+## 7. Long-context kernel, self-healing control, language model
 
 Holographic scan alone (custom Metal shader compiled: **no, PyTorch fallback**):
 
 | Sequence length | Scan latency | Wavefield size |
 |---:|---:|---:|
-| 4,096 | 11.9 ms | 8.0 KB |
-| 32,768 | 104.0 ms | 8.0 KB |
-| 65,536 | 249.4 ms | 8.0 KB |
-| 131,072 | 561.9 ms | 8.0 KB |
+| 4,096 | 11.2 ms | 8.0 KB |
+| 32,768 | 164.3 ms | 8.0 KB |
+| 65,536 | 243.8 ms | 8.0 KB |
+| 131,072 | 578.1 ms | 8.0 KB |
 
 | Track | Result |
 |---|---|
 | Closed-loop self-healing of a sinkhole fault | residual deviation 0.0313 with the controller vs 0.4695 without (15.0x); regime identified as W1 |
 | RCWE-Deep on a short repeated code snippet (623 tokens) | next-token accuracy 100.0% vs 57.5% for a Transformer; measured on the **training** sequence |
-| RCWE-Deep on the repository source (703,335 characters) | 0.59 bits/byte vs 2.81 for a Transformer after 32 s of training; measured on a **training** batch |
+| RCWE-Deep on the repository source (843,236 characters) | 0.51 bits/byte vs 2.93 for a Transformer after 32 s of training; measured on a **training** batch |
 
 The self-healing controller's feedback gains and the faulted nodes are written into the benchmark; the engine's part is identifying the regime. The two language-model rows report fit to data the models were trained on, so they show capacity to memorise under equal training time, not generalisation.
 
-## 7. Multimodal fusion, symplectic RL, wavefield swarm
+## 8. Multimodal fusion, symplectic RL, wavefield swarm
 
 | Track | RCWE | Comparison | Difference |
 |---|---:|---:|---:|
@@ -110,4 +127,4 @@ The self-healing controller's feedback gains and the faulted nodes are written i
 - The RL agent's plastic update is driven by a corrective-force signal supplied by the benchmark. Once the disturbance stops, the adapted policy holds the plant less tightly than the frozen one; Mission Control shows both phases.
 - The swarm figure covers only the two steps at first impact. Gossip works by pre-loading neighbours with the fault before it reaches them, so in the steps before impact those neighbours mispredict. Over a whole incident the coupled swarm's mean error can be higher than the isolated one's; Mission Control reports that cost next to the gain.
 
-_Total run time: 161 s._
+_Total run time: 264 s._

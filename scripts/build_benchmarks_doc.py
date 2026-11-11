@@ -118,6 +118,42 @@ def toolkit_on_regime_shift_logs() -> dict:
     return found
 
 
+def controls_table(seeds) -> list:
+    """
+    A log in which an operator moves the valve and the pump speed by hand, with no faults.
+    The same model is trained twice: with the controls left as they are by default (they
+    might be reacting to the sensors), and with both declared as commands.
+    """
+    import numpy as np
+
+    from rcwe.toolkit import TelemetryModel
+    from rcwe.toolkit.demo import make_pump_station
+
+    rows = []
+    for seed in seeds:
+        demo = make_pump_station(rows=4200, faults=False, seed=seed, operator_steps=18)
+        train, test = demo.table.slice(0, 3000), demo.table.slice(3000, None)
+        moved = sum(1 for move in demo.operator_steps if move["start"] >= 3000 or move["end"] >= 3000)
+        last = train.to_rows()[-1]
+        hold = np.tile([last["act_valve_open"], last["act_pump_speed"]], (24, 1))
+        opened = hold.copy()
+        opened[:, 0] += 0.10
+        plant = last["flow_m3h"] * 0.10 / (0.4 + last["act_valve_open"])      # what the simulated station does
+        for mode, commands in (("default", None), ("commands", True)):
+            model = TelemetryModel(seed=seed).fit(train, commands=commands)
+            result = model.detect(test)
+            flow = model.sensors.index("flow_m3h")
+            history = train.slice(2800, None)
+            a, b = model.forecast(24, history, future_controls=hold), model.forecast(24, history, future_controls=opened)
+            rows.append({
+                "seed": seed, "mode": mode, "skill": model.fit_summary_.skill, "steps_in_test": moved,
+                "events": result.n_events, "pointed": sum(1 for e in result.events if e.control_changes),
+                "worst": max((e.severity for e in result.events), key=["low", "medium", "high", "critical"].index, default="none"),
+                "response": float(b.values[-1, flow] - a.values[-1, flow]), "plant": plant,
+            })
+    return rows
+
+
 def main() -> None:
     from rcwe.benchmarks.real_world_suite import RealWorldBenchmarkSuite
     from rcwe.control.self_healing import AutonomousSelfHealingAgent
@@ -175,6 +211,45 @@ def main() -> None:
         "and read the skill figure in your own report before relying on forecasts.")
     say("")
 
+    # ------------------------------------------------------------------ controls
+    print("controls as commands ...", flush=True)
+    ctl = controls_table([7, 1, 2])
+    say("## 2. Toolkit: control inputs, by default and declared as commands")
+    say("")
+    say("The same pump station with no faults, but with an operator who moves the valve and the pump speed by hand "
+        "(18 step changes per control over 4,200 rows; the plant responds as it should). The model is trained on the first "
+        "3,000 rows twice: with the controls treated as they are by default, where a control is only used up to the row "
+        "being predicted *from* because it might be reacting to the sensors, and with both declared as commands "
+        "(`fit(..., commands=True)` or `--commands all`), where the model is also told their value for the row it predicts.")
+    say("")
+    say("| Seed | Controls | One-step skill | Events on 1,200 fault-free rows with operator steps | ...of which point at the control that moved | "
+        "Forecast response to a planned +0.10 valve step (24 steps) | What the plant does |")
+    say("|---:|---|---:|---:|---:|---:|---:|")
+    for r in ctl:
+        say(f"| {r['seed']} | {r['mode']} | {r['skill'] * 100:+.0f}% | {r['events']}" + (f" (worst: {r['worst']})" if r['events'] else "")
+            + f" | {r['pointed']} | {r['response']:+.2f} m3/h | {r['plant']:+.2f} m3/h |")
+    say("")
+
+    def share(mode: str) -> float:
+        picked = [r for r in ctl if r["mode"] == mode]
+        return sum(r["response"] for r in picked) / sum(r["plant"] for r in picked)
+
+    say(f"- Told nothing about the row it predicts, the model cannot anticipate an operator's step: its forecast moves by "
+        f"{share('default') * 100:.0f}% of what the plant does. With the controls declared as commands it moves by "
+        f"{share('commands') * 100:.0f}%: the right direction and most, not all, of the size.")
+    def total(mode: str, key: str) -> int:
+        return sum(r[key] for r in ctl if r["mode"] == mode)
+
+    say(f"- An operator's step is not a fault. In the scanned rows the operator made {total('default', 'steps_in_test')} step "
+        f"changes in all. They raised {total('default', 'events')} event(s) with the controls as by default and "
+        f"{total('commands', 'events')} with them declared as commands; {total('default', 'pointed')} and "
+        f"{total('commands', 'pointed')} of those say which control changed as they began, so they can be told from a fault "
+        "at a glance. (The training log contains steps of the same kind, which is what keeps most of them quiet.)")
+    say("- Declare as commands only controls that are set independently of the sensors (setpoints, schedules). A controller "
+        "output reacts to the sensors within the same sample; told its value, the model would learn the reaction and explain "
+        "faults away. That is why it is not the default.")
+    say("")
+
     # ------------------------------------------------------------------ validation
     print("multi-seed validation ...", flush=True)
     bench = ScientificValidationBenchmark(seed=42)
@@ -188,7 +263,7 @@ def main() -> None:
     lf_r = sum(v["rcwe"] for v in leak_free) / len(leak_free)
     lf_t = sum(v["tf"] for v in leak_free) / len(leak_free)
     env = report["environment"]
-    say("## 2. Engine vs frozen Transformer on the flow sandbox")
+    say("## 3. Engine vs frozen Transformer on the flow sandbox")
     say("")
     say(f"Three seeds, {env['rcwe_params']:,} engine parameters vs {env['baseline_tf_params']:,} in the Transformer baseline. "
         "After training, the sandbox topology is mutated and an offset is added to the observations; the engine keeps "
@@ -222,7 +297,7 @@ def main() -> None:
     # ------------------------------------------------------------------ scaling
     print("context scaling ...", flush=True)
     sweep = quiet(run_extreme_context_sweep)
-    say("## 3. Context-length scaling")
+    say("## 4. Context-length scaling")
     say("")
     say("One forward pass over sequences of growing length (batch 2, 64-dimensional model).")
     say("")
@@ -241,10 +316,10 @@ def main() -> None:
     # ------------------------------------------------------------------ real-world style suite
     print("regime-shift suite ...", flush=True)
     rw = quiet(RealWorldBenchmarkSuite.run_all_benchmarks)
-    say("## 4. Regime-shift suite (ETT / SWaT / NASA-style)")
+    say("## 5. Regime-shift suite (ETT / SWaT / NASA-style)")
     say("")
     say("Three **synthetic** 40-step logs shaped like well-known industrial datasets (they are generated by "
-        "`real_world_suite.py`, not downloaded), each with a fault injected at step 20. Same original protocol as section 2.")
+        "`real_world_suite.py`, not downloaded), each with a fault injected at step 20. Same original protocol as section 3.")
     say("")
     attribution = toolkit_on_regime_shift_logs()
     say("| Domain | Sensors / controls | RCWE post-shift MSE | Frozen Transformer | Difference | Fault injected on | Toolkit: first event |")
@@ -265,7 +340,7 @@ def main() -> None:
     print("symbolic and code tasks ...", flush=True)
     sym = quiet(run_symbolic_reasoning_benchmark, seed=42, epochs=45)
     code = quiet(run_code_reasoning_benchmark, seed=42, epochs=35)
-    say("## 5. Symbolic conservation and code-trace tasks")
+    say("## 6. Symbolic conservation and code-trace tasks")
     say("")
     say("| Task | RCWE | Transformer | Difference |")
     say("|---|---:|---:|---:|")
@@ -285,7 +360,7 @@ def main() -> None:
     heal = quiet(AutonomousSelfHealingAgent(seed=42).run_closed_loop_healing_episode)
     lm = quiet(run_deep_lm_benchmark, seed=42, epochs=45)
     corpus = quiet(LargeCorpusRCWETrainer(d_model=96, num_layers=4, seq_len=256).train_and_evaluate, epochs=30, batch_size=8)
-    say("## 6. Long-context kernel, self-healing control, language model")
+    say("## 7. Long-context kernel, self-healing control, language model")
     say("")
     say(f"Holographic scan alone (custom Metal shader compiled: **{'yes' if msl['msl_shader_compiled'] else 'no, PyTorch fallback'}**):")
     say("")
@@ -313,7 +388,7 @@ def main() -> None:
     mm = quiet(run_multimodal_substation_benchmark, epochs=30)
     rl = quiet(run_symplectic_rl_benchmark, steps=40)
     sw = quiet(run_distributed_swarm_benchmark, steps=30)
-    say("## 7. Multimodal fusion, symplectic RL, wavefield swarm")
+    say("## 8. Multimodal fusion, symplectic RL, wavefield swarm")
     say("")
     say("| Track | RCWE | Comparison | Difference |")
     say("|---|---:|---:|---:|")
